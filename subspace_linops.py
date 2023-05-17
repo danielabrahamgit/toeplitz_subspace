@@ -98,10 +98,11 @@ class A_subspace(sp.linop.Linop):
 
                     # Clear memory
                     del alpha_ksp, psf_col
-                    mempool = self.dev.xp.get_default_memory_pool()
-                    pinned_mempool = self.dev.xp.get_default_pinned_memory_pool()
-                    mempool.free_all_blocks()
-                    pinned_mempool.free_all_blocks()
+                    if 'cuda' in str(self.dev).lower():
+                        mempool = self.dev.xp.get_default_memory_pool()
+                        pinned_mempool = self.dev.xp.get_default_pinned_memory_pool()
+                        mempool.free_all_blocks()
+                        pinned_mempool.free_all_blocks()
                     
                 # Update Ts
                 Ts[:, k, ...] = T_col
