@@ -4,7 +4,6 @@ from typing import Optional
 
 from einops import rearrange, repeat
 import numpy as np
-import sigpy as sp
 import torch
 import torch.fft as fft
 import torch.nn as nn
@@ -15,6 +14,7 @@ from torchkbnufft import (
     ToepNufft,
     calc_toeplitz_kernel,
 )
+from tqdm import tqdm
 
 class SubspaceLinopFactory(nn.Module):
     def __init__(
@@ -95,7 +95,7 @@ class SubspaceLinopFactory(nn.Module):
 
     def get_adjoint(self):
         A, H, W = self.ishape
-        C, I, T, K = self.oshape
+        T, C, K = self.oshape
         def AH_func(y: torch.Tensor):
             assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
             y_out = torch.zeros((I, T, C, K), device=y.device).type(y.dtype)
@@ -121,6 +121,7 @@ class SubspaceLinopFactory(nn.Module):
             oversamp_factor: int = 2,
             device='cpu',
             kernels: Optional[torch.Tensor] = None,
+            verbose=False,
     ):
         """
         Get the normal operator (i.e. A^H A)
@@ -144,30 +145,41 @@ class SubspaceLinopFactory(nn.Module):
                 return AH_func(A_func(x))
             return AHA_func, self.ishape, self.ishape
 
-        A, H, W = self.ishape
-        C, I, T, K = self.oshape
-        im_size = (H, W)
+        A, *im_size = self.ishape
+        T, C, K = self.oshape
+        R = self.trj.shape[0]
         # Compute toeplitz embeddings
         if kernels is None:
-            print('> Computing weights...')
+            if verbose:
+                print('> Computing weights...')
             start = time.perf_counter()
-            weights = torch.zeros((I, A, A, K), device=device).type(torch.complex64)
+            weights = torch.zeros((R, A, A, K), device=device).type(torch.complex64)
+            subsamp_mask = torch.zeros((R, T), device=device).type(torch.complex64)
+            subsamp_mask[self.subsamp_idx, torch.arange(T)] = 1.
             for a_in in range(A):
-                weight = torch.zeros((I, A, K), device=device).type(torch.complex64)
+                weight = torch.zeros((R, A, K), device=device).type(torch.complex64)
                 weight[:, a_in, :] = 1.
-                weight = torch.einsum('at,iak->itk', self.phi, weight)
-                weight = weight * self.subsamp_mask * (self.sqrt_dcf ** 2)
-                weight = torch.einsum('at,itk->iak', torch.conj(self.phi), weight)
+                weight = torch.einsum('at,rak->rtk', self.phi, weight)
+                weight = weight * subsamp_mask[..., None] * (self.sqrt_dcf[:, None, :] ** 2)
+                weight = torch.einsum('at,rtk->rak', torch.conj(self.phi), weight)
                 weights[:, :, a_in, :] = weight
             total = time.perf_counter() - start
-            print(f'>> Time: {total} s')
+            if verbose:
+                print(f'>> Time: {total} s')
 
-            print('> Generating kernels...')
+
+            if verbose:
+                print('> Generating kernels...')
             start = time.perf_counter()
             kernel_size = (oversamp_factor * d for d in im_size)
             kernels = torch.zeros((A, A, *kernel_size), device=device).type(torch.complex64)
             for a_in in range(A):
                 for a_out in range(A):
+                    if a_in > a_out:
+                        kernels[a_out, a_in, ...] = kernels[a_in, a_out]
+                        continue
+                    if verbose:
+                        print(f'>> Calculating kernel({a_out}, {a_in})')
                     kernel = calc_toeplitz_kernel(
                         self.trj,
                         im_size,
@@ -175,75 +187,44 @@ class SubspaceLinopFactory(nn.Module):
                     )
                     kernels[a_out, a_in, ...] = kernel.sum(dim=0)
             total = time.perf_counter() - start
-            print(f'>> Time: {total} s')
+            if verbose:
+                print(f'>> Time: {total} s')
 
-        def crop(img, pad_height, pad_width):
-            return img[..., pad_height:-pad_height, pad_width:-pad_width]
-        kernel_size = kernel.shape[-2:]
-        pad_height = (kernel_size[0] - im_size[0]) // 2
-        pad_width = (kernel_size[1] - im_size[1]) // 2
-        pad = (
-            pad_width, pad_width,
-            pad_height, pad_height,
-            0, 0,
-            0, 0,
-        )
+        # Deal with cropping
+        def crop(img, pads):
+            return img[..., pads]
+        D = len(im_size)
+        kernel_size = kernel.shape[-D:]
+        pads = sum(([(ksz - isz) // 2]*2
+                   for ksz, isz in zip(kernel_size, im_size)), start=[]).reverse()  # F.pad requires reversal of dims
+        slc = [slice(p[2*i], -p[2*i+1]) for i in range(len(pads)//2)].reverse()
+        print(pads)
+        print(slc)
+        pads.extend([0, 0, 0, 0])   # coil and subspace coefficient dims don't get padded
         def AHA_func(x):
             """
             x: [A H W]
             """
+            dim = tuple(range(-D, 0))
             # Apply sensitivies
-            x = x[None, :, ...] * self.mps[:, None, ...] # [C A H W]
-            x = F.pad(x, pad)
+            x = x[None, :, ...] * self.mps[:, None, ...] # [C A *im_size]
+            x = F.pad(x, pads)
             # Apply Toeplitz'd NUFFT normal op
-            oversamp_h = kernel_size[0]/im_size[0]
-            oversamp_w = kernel_size[1]/im_size[1]
-            Fx = fft.fftn(x, dim=(-2, -1), norm='ortho')
+            Fx = fft.fftn(x, dim=dim, norm='ortho')
             # Note that kernel has DC in top left (i.e. not fftshifted)
             # batch_kernel = kernel/torch.sum(torch.abs(kernel)**2, dim=(-2, -1), keepdim=True)
             # batch_kernel = torch.real(kernel)
             # batch_kernel = batch_kernel[:, None, :, :] # I 1 H W
             # Fx: [C Ain 2H 2W]
             # kernels: [Aout Ain 2H 2W]
-            x = oversamp_h * oversamp_w * fft.ifftn(
-                Fx[:, None, ...] * kernels, dim=(-2, -1), norm='ortho'
-            ) # [C Aout Ain 2H 2W]
+            x = (oversamp_factor ** D) * fft.ifftn(
+                Fx[:, None, ...] * kernels, dim=dim, norm='ortho'
+            ) # [C Aout Ain *2*im_size]
 
             x = torch.sum(x, dim=2) # Sum over Ain
-            x = crop(x, pad_height, pad_width)
+            x = crop(x, slc)
             # Apply adjoint sensitivities
             x = x * torch.conj(self.mps[:, None, ...])
             x = torch.sum(x, dim=0) # Sum over coils
             return x
         return AHA_func, self.ishape, self.ishape
-
-    # def get_ops(self, toeplitz: bool = False):
-    #     A, input_shape, output_shape = self._forward()
-    #     AH, _, _ = self._adjoint()
-    #     AHA, _, _ = self._normal(toeplitz)
-
-    #     class MRFLinop(torch.autograd.Function):
-    #         ishape: Tuple = input_shape
-    #         oshape: Tuple = output_shape
-
-    #         @staticmethod
-    #         def forward(ctx, x):
-    #             return A(x)
-
-    #         @staticmethod
-    #         def backward(ctx, x_grad):
-    #             return AH(x_grad)
-
-    #     class MRFLinopAdjoint(torch.autograd.Function):
-    #         ishape: Tuple = output_shape
-    #         oshape: Tuple = input_shape
-
-    #         @staticmethod
-    #         def forward(ctx, x):
-    #             return AH(x)
-
-    #         @staticmethod
-    #         def backward(ctx, x_grad):
-    #             return A(x_grad)
-
-    #     return MRFLinop, MRFLinopAdjoint
