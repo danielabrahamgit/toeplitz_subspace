@@ -1,4 +1,14 @@
+import sys
+sys.path.append('..')
+from collections import OrderedDict
+
+from einops import rearrange
+import matplotlib
+import matplotlib.pyplot as plt
 import torch
+
+from linop import SubspaceLinopFactory
+from invivo_data import load_data
 
 
 
@@ -8,23 +18,23 @@ def test_mrf_subsp_linop():
     device = torch.device(
         f'cuda' if torch.cuda.is_available() else 'cpu'
     )
-    fullsamp_sp = load_fullysampled_data()
-    fullsamp = fullsamp_sp.to_torch(device=device)
-    subsamp_config = SubsampleConfig(
-        interleaves_per_timepoint=1
+    ksp, trj, dcf, phi, mps = load_data(device, verbose=True)
+    linop_factory = SubspaceLinopFactory(
+        trj, phi, mps, torch.sqrt(dcf)
     )
-    subsamp = subsample(fullsamp_sp, **asdict(subsamp_config))
-    subsamp = subsamp.to_torch(device=device)
 
-    linop_factory = MRFSubspaceLinopFactory(fullsamp, subsamp_config)
-    linop_factory.to(device)
-    A_func, ishape, oshape = linop_factory.get_forward()
-    AH_func, _, _ = linop_factory.get_adjoint()
+    A, ishape, oshape = linop_factory.get_forward()
+    AH, _, _ = linop_factory.get_adjoint()
+    AHA, _, _ = linop_factory.get_normal(
+        toeplitz=True,
+        device=device,
+        verbose=True,
+    )
 
     # Try stuff
-    y = rearrange(subsamp.y, 'c i t k -> i t c k')
-    AHb = AH_func(y)
-    yhat = A_func(AHb)
+    y = rearrange(ksp, 't c k ->  wl  ')
+    AHb = AH(y)
+    yhat = A(AHb)
 
     # Compare Naive and Toeplitz
     im_size = linop_factory.ishape[-2:]
