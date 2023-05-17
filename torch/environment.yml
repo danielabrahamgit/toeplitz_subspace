@@ -1,0 +1,28 @@
+name: mrf-subspace
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - jupyter
+  - matplotlib
+  - numpy
+  - python=3.10
+  - pytorch>=1.13
+  - pytorch-cuda
+  - scipy
+  - torchvision
+  - tqdm
+  - pyyaml
+  - pip
+  - pip:
+     - easydict
+     - einops
+     - gdown
+     - h5py
+     - mat73 # loading matlab v7.3 format files
+     - pytorch_memlab
+     - pyyaml
+     - torchkbnufft==1.4.0
+     - tyro
+     - wget
