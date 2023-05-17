@@ -41,7 +41,7 @@ class A_subspace(sp.linop.Linop):
         super().__init__((mps.shape[0], *trj.shape[:-1]), (phi.shape[0], *mps.shape[1:]))
 
         # Save stuff
-        self.dev = sp.get_device(mps)
+        dev = sp.get_device(mps)
         self.fast_AHA = fast_AHA
         
         # Define standard subspace linop
@@ -80,8 +80,8 @@ class A_subspace(sp.linop.Linop):
                 alpha_ksp = sig_ksp[None, ...] * phi_rs.conj()
                 
                 # Adjoint on GPU
-                with self.dev:
-                    alpha_ksp = sp.to_device(alpha_ksp, self.dev)
+                with dev:
+                    alpha_ksp = sp.to_device(alpha_ksp, dev)
 
                     if sqrt_dcf is None:
                         psf_col = sp.nufft_adjoint(input=alpha_ksp, 
@@ -98,24 +98,25 @@ class A_subspace(sp.linop.Linop):
 
                     # Clear memory
                     del alpha_ksp, psf_col
-                    mempool = self.dev.xp.get_default_memory_pool()
-                    pinned_mempool = self.dev.xp.get_default_pinned_memory_pool()
-                    mempool.free_all_blocks()
-                    pinned_mempool.free_all_blocks()
+                    if 'cuda' in str(dev).lower():
+                        mempool = dev.xp.get_default_memory_pool()
+                        pinned_mempool = dev.xp.get_default_pinned_memory_pool()
+                        mempool.free_all_blocks()
+                        pinned_mempool.free_all_blocks()
                     
                 # Update Ts
                 Ts[:, k, ...] = T_col
 
             # Make Toeplitz operator
-            D1 = sp.linop.ToDevice(alpha_size, self.dev, sp.cpu_device)
-            D2 = sp.linop.ToDevice(alpha_size, sp.cpu_device, self.dev)
+            D1 = sp.linop.ToDevice(alpha_size, dev, sp.cpu_device)
+            D2 = sp.linop.ToDevice(alpha_size, sp.cpu_device, dev)
             R2X = sp.linop.Resize(alpha_size_os, alpha_size)
             F2X = sp.linop.FFT(alpha_size_os, axes=list(range(-d, 0)))
             R   = sp.linop.Reshape((1, *alpha_size_os), alpha_size_os)
             T   = sp.linop.Multiply(R.oshape, Ts)
             SUM = sp.linop.Sum(T.oshape, axes=(1,))
-            D_presum = sp.linop.ToDevice(R.oshape, sp.cpu_device, self.dev)
-            D_pstsum = sp.linop.ToDevice(SUM.oshape, self.dev, sp.cpu_device)
+            D_presum = sp.linop.ToDevice(R.oshape, sp.cpu_device, dev)
+            D_pstsum = sp.linop.ToDevice(SUM.oshape, dev, sp.cpu_device)
             outer_toep = []
             for k in range(n_coil):
                 S = sp.linop.Multiply(alpha_size, mps[None, k, ...])
