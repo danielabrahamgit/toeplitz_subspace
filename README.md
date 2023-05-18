@@ -1,5 +1,9 @@
 # Subspace Reconstruction With Toeplitz Embedding
-This repository will show some examples of how to perform subspace reconstructions with toeplitz embedding. We demonstrate two separate implimenations, one in Pytorch and one in Sigpy.
+This repository will show some examples of how to perform subspace reconstructions with toeplitz embedding. We demonstrate two separate implimenations, one in Pytorch and one in Sigpy.   
+
+To better explian the code, we attach a small [theory pdf](./theory.pdf). If there are any remaining questions, please reach out to:
+- abrahamd@stanford.edu
+- markn1@stanford.edu
 
 ## In-Vivo MRF Data Example (Sigpy)  
  Here we use in-vivo MRF data, and then perform a subspace reconstruction with and without the toeplitz embedding. Make sure to download the data here https://drive.google.com/drive/folders/12IiApk8485EnmA0oe9doif9dg1oOxFOL?usp=share_link.      
