@@ -7,8 +7,8 @@ class PadLast(nn.Module):
         super().__init__()
         assert len(pad_im_size) == len(im_size)
         self.im_dim = len(im_size)
-        self.im_size = im_size
-        self.pad_im_size = pad_im_size
+        self.im_size = tuple(im_size)
+        self.pad_im_size = tuple(pad_im_size)
 
         sizes = [[(psz - isz) // 2]*2 for psz, isz in zip(pad_im_size, im_size)]
         self.pad = sum(sizes, start=[])
@@ -20,13 +20,13 @@ class PadLast(nn.Module):
 
     def forward(self, x):
         """Pad the last n dimensions of x"""
-        assert x.shape[-self.im_dim:] == self.im_size
+        assert tuple(x.shape[-self.im_dim:]) == self.im_size
         pad = self.pad + [0, 0]*(x.ndim - self.im_dim)
         return F.pad(x, pad)
 
     def adjoint(self, y):
         """Crop the last n dimensions of y"""
-        assert y.shape[-self.im_dim:] == self.pad_im_size
+        assert tuple(y.shape[-self.im_dim:]) == self.pad_im_size
         slc = [slice(None)] * (y.ndim - self.im_dim) + self.crop_slice
         return y[slc]
 

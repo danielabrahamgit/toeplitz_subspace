@@ -6,7 +6,7 @@ channels:
 dependencies:
   - jupyter
   - matplotlib
-  - numpy
+  - numpy=1.22
   - python=3.10
   - pytorch>=1.13
   - pytorch-cuda
@@ -23,6 +23,7 @@ dependencies:
      - mat73 # loading matlab v7.3 format files
      - pytorch_memlab
      - pyyaml
+     - sigpy==0.1.25
      - torchkbnufft==1.4.0
      - tyro
      - wget

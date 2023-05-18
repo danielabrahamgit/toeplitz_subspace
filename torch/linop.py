@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from timing import tictoc
 import toep
+from pad import PadLast
 
 class SubspaceLinopFactory(nn.Module):
     def __init__(
@@ -58,7 +59,7 @@ class SubspaceLinopFactory(nn.Module):
         self.ishape = (A, *im_size)
         self.oshape = (T, C, K)
 
-        sqrt_dcf = sqrt_dcf if sqrt_dcf is not None else torch.ones((R, K))
+        sqrt_dcf = sqrt_dcf if sqrt_dcf is not None else torch.ones((R, K)).type(torch.float32)
         self.sqrt_dcf = nn.Parameter(sqrt_dcf, requires_grad=False)
 
         if subsamp_idx is None:
@@ -97,24 +98,25 @@ class SubspaceLinopFactory(nn.Module):
         return A_func, self.ishape, self.oshape
 
     def get_adjoint(self):
-        A, H, W = self.ishape
+        R = self.trj.shape[0]
+        A, *im_size = self.ishape
         T, C, K = self.oshape
+
         def AH_func(y: torch.Tensor):
             assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
-            y_out = torch.zeros((I, T, C, K), device=y.device).type(y.dtype)
-            # Expand along interleave dimension
+            y_out = torch.zeros((R, T, C, K), device=y.device).type(y.dtype)
+            # Expand along subsampling dimension
             y_out[self.subsamp_idx, torch.arange(T), :, :] = y
             # Apply adjoint density compensation
-            y = self.sqrt_dcf[..., None, :] * y_out
+            y = self.sqrt_dcf[:, None, None, :] * y_out
             # Apply adjoint subspace
-            y = torch.einsum('at,itck->aick', torch.conj(self.phi), y)
+            y = torch.einsum('at,rtck->arck', torch.conj(self.phi), y)
             x = []
             for a in range(A):
-                y_a = y[a, ...] # [I C K]
-                x_a = 1/(H*W) * self.nufft_adjoint(y_a, self.trj, smaps=self.mps) # [I 1 H W]
+                y_a = y[a, ...] # [R C K]
+                x_a = 1/np.prod(im_size) * self.nufft_adjoint(y_a, self.trj, smaps=self.mps) # [R 1 H W]
                 x_a = x_a.sum(0) # [1 H W]
-                x.append
-(x_a)
+                x.append(x_a)
             x = torch.stack(x) # [A 1 H W]
             return x[:, 0, ...]
         return AH_func, self.oshape, self.ishape
@@ -129,18 +131,8 @@ class SubspaceLinopFactory(nn.Module):
     ):
         """
         Get the normal operator (i.e. A^H A)
-
         oversamp_factor: for toeplitz only, the oversamping
         factor for the PSF
-
-        Optional argument to use the toeplitz embedding,
-        which is memory intensive but much faster.
-        C: number of coils
-        A: number of subspace coefficents
-        H, W: shape of image
-        I: Number of interleaves
-        T: Number of TRs (timepoints)
-        K: Number of kspace trajectory points
         """
         if not toeplitz:
             A_func, _, _ = self.get_forward()

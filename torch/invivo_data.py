@@ -19,11 +19,12 @@ def download():
 
 
 def load_data(device='cpu', verbose=False):
-    ksp = torch.from_numpy(np.load('data/ksp.npy')).to(device) # Raw k-space data
-    trj = torch.from_numpy(np.load('data/trj.npy')).to(device) # Trajectory
-    dcf = torch.from_numpy(np.load('data/dcf.npy')).type(torch.float32).to(device) # Density compensation
-    phi = torch.from_numpy(np.load('data/phi.npy')).type(torch.complex64).to(device) # Subspace basis
-    mps = torch.from_numpy(np.load('data/mps.npy')).type(torch.complex64).to(device) # Sensitivity maps
+    data = Path(__file__).parent/'data'
+    ksp = torch.from_numpy(np.load(data/'ksp.npy')).to(device) # Raw k-space data
+    trj = torch.from_numpy(np.load(data/'trj.npy')).type(torch.float32).to(device) # Trajectory
+    dcf = torch.from_numpy(np.load(data/'dcf.npy')).type(torch.float32).to(device) # Density compensation
+    phi = torch.from_numpy(np.load(data/'phi.npy')).type(torch.complex64).to(device) # Subspace basis
+    mps = torch.from_numpy(np.load(data/'mps.npy')).type(torch.complex64).to(device) # Sensitivity maps
 
     # Fix dimensions
     ksp = rearrange(ksp, 'c k 1 t -> t c k')

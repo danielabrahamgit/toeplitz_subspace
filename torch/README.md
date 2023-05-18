@@ -1,8 +1,11 @@
 # Torch version of MRF subspace linops
-Runs in 2D
 
 ## Getting the in-vivo data
-Run `python download_data.py` from this directory.
+Run `python invivo_data.py` from this directory.
+
+
+## Timing tests
+![Timings](./images/timings.png "Timings")
 
 
 TODO:
