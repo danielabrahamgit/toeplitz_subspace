@@ -41,7 +41,7 @@ class SubspaceLinopFactory(nn.Module):
         phi: [A T] temporal subspace basis
         mps: [C H W] SENSE maps
         sqrt_dcf: [R K] Optional density compensation
-        subsamp_idx: [T 1] Useful when trajectories repeat at multiple timepoints.
+        subsamp_idx: [T] Useful when trajectories repeat at multiple timepoints.
             - subsamp_idx[t] = [r], where r is the subsampling index in 0,...,R-1 of that trajectory
             - TODO: support multiple trajectories per TR more easily, i.e. [T N]
 
