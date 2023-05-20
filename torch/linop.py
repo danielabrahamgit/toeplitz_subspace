@@ -147,23 +147,7 @@ class SubspaceLinopFactory(nn.Module):
         R = self.trj.shape[0]
         # Compute toeplitz embeddings
         if kernels is None:
-            with tictoc('compute_weights', verbose):
-                weights = toep.compute_weights(
-                    self.subsamp_idx,
-                    self.phi,
-                    self.sqrt_dcf,
-                    device=device,
-                )
-
-            with tictoc('compute_kernels', verbose):
-                kernels = toep.compute_kernels(
-                    self.trj,
-                    weights,
-                    im_size,
-                    oversamp_factor,
-                    device,
-                    verbose,
-                )
+            kernels = self.get_kernels(im_size, oversamp_factor, device, verbose)
         padder = PadLast(kernels.shape[-D:], im_size)
 
         def AHA_func(x):
@@ -189,3 +173,23 @@ class SubspaceLinopFactory(nn.Module):
             x = torch.sum(x, dim=0) # Sum over coils
             return x
         return AHA_func, self.ishape, self.ishape
+
+    def get_kernels(self, im_size, oversamp_factor, device, verbose):
+        with tictoc('compute_weights', verbose):
+            weights = toep.compute_weights(
+                self.subsamp_idx,
+                self.phi,
+                self.sqrt_dcf,
+                device=device,
+            )
+
+        with tictoc('compute_kernels', verbose):
+            kernels = toep.compute_kernels(
+                self.trj,
+                weights,
+                im_size,
+                oversamp_factor,
+                device,
+                verbose,
+            )
+        return kernels
