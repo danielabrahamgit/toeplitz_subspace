@@ -72,10 +72,15 @@ class SubspaceLinopFactory(nn.Module):
         self.nufft = KbNufft(im_size)
         self.nufft_adjoint = KbNufftAdjoint(im_size)
 
-    def get_forward(self):
+    def get_forward(self, norm: Optional[str] = 'sigpy'):
         R, D = self.trj.shape[:2]
         A = self.ishape[0]
         T, C, K = self.oshape
+        scale_factor = 1.
+        if norm == 'sigpy':
+            norm = 'ortho'
+            scale_factor = 2 ** (D/2)
+
         def A_func(x: torch.Tensor):
             """
             x: [A *im_size]
@@ -85,7 +90,7 @@ class SubspaceLinopFactory(nn.Module):
             for a in range(A):
                 x_a = x[a:a+1, ...]
                 x_a = x_a.repeat(R, 1, *(D*(1,)))  # [R 1 *im_size]
-                y_a = self.nufft(x_a, self.trj, smaps=self.mps)  # [R C K]
+                y_a = scale_factor * self.nufft(x_a, self.trj, smaps=self.mps, norm=norm)  # [R C K]
                 y.append(y_a)
             y = torch.stack(y)  # [A R C K]
             # Apply subspace basis
@@ -97,10 +102,17 @@ class SubspaceLinopFactory(nn.Module):
             return y # [T C K]
         return A_func, self.ishape, self.oshape
 
-    def get_adjoint(self):
+    def get_adjoint(self, norm: Optional[str] = 'sigpy'):
         R = self.trj.shape[0]
         A, *im_size = self.ishape
+        D = len(im_size)
         T, C, K = self.oshape
+        scale_factor = 1/np.prod(im_size)
+        if norm == 'ortho':
+            scale_factor = 1.
+        elif norm == 'sigpy':
+            norm = 'ortho'
+            scale_factor = (2 ** D/2)
 
         def AH_func(y: torch.Tensor):
             assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
@@ -114,7 +126,7 @@ class SubspaceLinopFactory(nn.Module):
             x = []
             for a in range(A):
                 y_a = y[a, ...] # [R C K]
-                x_a = 1/np.prod(im_size) * self.nufft_adjoint(y_a, self.trj, smaps=self.mps) # [R 1 H W]
+                x_a = scale_factor * self.nufft_adjoint(y_a, self.trj, smaps=self.mps, norm=norm) # [R 1 H W]
                 x_a = x_a.sum(0) # [1 H W]
                 x.append(x_a)
             x = torch.stack(x) # [A 1 H W]
