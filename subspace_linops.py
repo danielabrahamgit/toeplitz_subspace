@@ -2,26 +2,40 @@ import sigpy as sp
 import numpy as np
 import time
 
-def subspace_linop(trj, phi, mps, sqrt_dcf=None):
+
+def subspace_linop(trj, phi, mps, sqrt_dcf=None, use_gridding=False):
     """
     Constructs a linear operator that describes the subspace reconstruction model.
-    This is the memory efficient implimentation
+    Params:
         trj - trajectory with shape (nro, npe, ntr, d)
         phi - subspace basis with shape (nsub, ntr)
         mps - sensititvity maps with shape (ncoil, ndim1, ..., ndimN)
         sqrt_dcf - the density comp. functon with shape (nro, ...)
         use_gridding - toggles gridding reconstruction
+    Returns:
+        A - (sigpy linear operator) forward model
+        A_N - (sigpy linear operator) normal operator
     """
 
+    # Make sure all arrays are on the same device
     dev = sp.get_device(mps)
     assert sp.get_device(phi) == dev
-
-    F = sp.linop.NUFFT(mps.shape[1:], trj)
+    
+    # Define Fourier operator
+    if use_gridding:
+        F = sp.linop.FFT(mps.shape[1:])
+        P = sp.linop.Interpolate(F.oshape, trj, param=0, width=1)
+        F = P * F
+    else:
+        F = sp.linop.NUFFT(mps.shape[1:], trj)
     if type(sqrt_dcf) != type(None):
         assert sp.get_device(sqrt_dcf) == dev
         F = sp.linop.Multiply(trj.shape[:-1], sqrt_dcf) * F
 
+    # Memory efficient method: Move subspace images from a single coil on and off GPU
+    # Thanks Sid for this!
     outer_A = []
+    A_N = None
     for k in range(mps.shape[0]):
         S = sp.linop.Multiply(mps.shape[1:], mps[k, ...]) * \
             sp.linop.Reshape( mps.shape[1:], [1] + list(mps.shape[1:]))
@@ -31,13 +45,36 @@ def subspace_linop(trj, phi, mps, sqrt_dcf=None):
         inner_A = sp.linop.Hstack(lst_A, axis=0)
         D1 = sp.linop.ToDevice(inner_A.ishape, dev, sp.cpu_device)
         D2 = sp.linop.ToDevice(inner_A.oshape, sp.cpu_device, dev)
+        D3 = sp.linop.ToDevice(inner_A.ishape, sp.cpu_device, dev)
         outer_A.append(D2 * inner_A * D1) 
+        if A_N is None:
+            A_N = D3 * inner_A.H * inner_A * D1
+        else:
+            A_N = A_N + (D3 * inner_A.H * inner_A * D1)
     A = sp.linop.Vstack(outer_A, axis=0)
         
-    return A
+    return A, A_N
 
 class A_subspace(sp.linop.Linop):
-    def __init__(self, trj, phi, mps, sqrt_dcf=None, fast_AHA=False, mem_save=True):
+    """
+    Linear operator for non-cartesian subspace reconstructions
+    """
+    def __init__(self, trj, phi, mps, sqrt_dcf=None, fast_AHA=False):
+        """
+        Params:
+            trj - k-space trajectory with shape (nro, npe, ntr, d)
+                    nro - number of readout points
+                    npe - number of interleaves/phase encodes
+                    ntr - number of time points (TRs for MRF)
+                    d   - dimension of k-space (usually 2 or 3)
+            phi - subspace basis with shape (n_subspace, ntr)
+            mps - sensitivity maps with shape (n_coils, img_d1, ..., img_dN)
+            sqrt_dcf - square root of density compensation factor with shape (nro, npe, ntr)
+            fast_AHA - toggles toeplitz-style reconstructions, will take more memory
+        Saves:
+            self.linop - (sigpy linop) forward model
+            self.normal_linop - (sigpy linop) normal operator
+        """
         super().__init__((mps.shape[0], *trj.shape[:-1]), (phi.shape[0], *mps.shape[1:]))
 
         # Save stuff
@@ -45,7 +82,7 @@ class A_subspace(sp.linop.Linop):
         self.fast_AHA = fast_AHA
         
         # Define standard subspace linop
-        self.linop = subspace_linop(trj, phi, mps, sqrt_dcf)
+        self.linop, self.normal = subspace_linop(trj, phi, mps, sqrt_dcf)
         
         # Store toeplitz embedding
         if fast_AHA == True:
@@ -115,17 +152,14 @@ class A_subspace(sp.linop.Linop):
             R   = sp.linop.Reshape((1, *alpha_size_os), alpha_size_os)
             T   = sp.linop.Multiply(R.oshape, Ts)
             SUM = sp.linop.Sum(T.oshape, axes=(1,))
-            D_presum = sp.linop.ToDevice(R.oshape, sp.cpu_device, dev)
-            D_pstsum = sp.linop.ToDevice(SUM.oshape, dev, sp.cpu_device)
-            outer_toep = []
+            self.normal = None
             for k in range(n_coil):
                 S = sp.linop.Multiply(alpha_size, mps[None, k, ...])
                 op = D2 * S.H * R2X.H * F2X.H * SUM * T * R * F2X * R2X * S * D1
-                R_coil = sp.linop.Reshape((1, *op.oshape), op.oshape)
-                outer_toep.append(R_coil * op)
-            outer_toep = sp.linop.Vstack(outer_toep, axis=0)
-            self.toep_linop = sp.linop.Sum(outer_toep.oshape, axes=(0,)) * outer_toep
-        
+                if self.normal is None:
+                    self.normal = op
+                else:
+                    self.normal = self.normal + op
             end = time.perf_counter()
             print(f'Time = {end - start:.3f}s')
 
@@ -136,7 +170,4 @@ class A_subspace(sp.linop.Linop):
         return self.linop.H
 
     def _normal_linop(self):
-        if self.fast_AHA:
-            return self.toep_linop
-        else:
-            return self.linop.H * self.linop
+        return self.normal
