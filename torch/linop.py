@@ -20,6 +20,8 @@ from .timing import tictoc
 from . import toep
 from .pad import PadLast
 
+__all__ = ['SubspaceLinopFactory']
+
 class SubspaceLinopFactory(nn.Module):
     def __init__(
             self,
@@ -36,10 +38,11 @@ class SubspaceLinopFactory(nn.Module):
         D: dimension of reconstruction (e.g 2D, 3D, etc)
         A: temporal subspace dimension
         K: number of kspace trajectory points
+        R: Number of interleaves
 
         trj: [R D K] all kspace trajectories, in units of rad/voxel ([-pi, pi])
         phi: [A T] temporal subspace basis
-        mps: [C H W] SENSE maps
+        mps: [C H W] coil sensitivities
         sqrt_dcf: [R K] Optional density compensation
         subsamp_idx: [T] Useful when trajectories repeat at multiple timepoints.
             - subsamp_idx[t] = [r], where r is the subsampling index in 0,...,R-1 of that trajectory
