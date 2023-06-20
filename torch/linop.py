@@ -1,7 +1,8 @@
+from pathlib import Path
 from collections import OrderedDict
 from warnings import warn
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 from einops import rearrange, repeat
 import numpy as np
@@ -213,4 +214,23 @@ class SubspaceLinopFactory(nn.Module):
                 device,
                 verbose,
             )
+        return kernels
+
+    def get_kernels_cache(
+            self,
+            cache_file: Path,
+            im_size: Tuple,
+            force_reload: bool = False,
+    ):
+        if cache_file.is_file() and not force_reload:
+            kernels = np.load(cache_file)
+            kernels = torch.from_numpy(kernels)
+        else:
+            kernels = self.get_kernels(
+                im_size,
+                oversamp_factor=2,
+                device='cpu',
+                verbose=True,
+            )
+            np.save(cache_file, kernels)
         return kernels
