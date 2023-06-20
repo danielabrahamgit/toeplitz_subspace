@@ -1,4 +1,5 @@
 from collections import OrderedDict
+from warnings import warn
 import time
 from typing import Optional
 
@@ -66,8 +67,13 @@ class SubspaceLinopFactory(nn.Module):
         self.sqrt_dcf = nn.Parameter(sqrt_dcf, requires_grad=False)
 
         if subsamp_idx is None:
-            assert R == T, 'If no subsampling mask provided, need one trajectory for each timepoint.'
-            subsamp_idx = torch.arange(T)
+            if R == 1:
+                warn('Assuming single trajectory per timepoint')
+                subsamp_idx = torch.zeros(T).long()
+            elif R > 1:
+                assert R == T, 'If no subsampling mask provided and number of interleaves > 1, need one interleaf for each timepoint.'
+                warn('Assuming trajectories and timepoints correspond')
+                subsamp_idx = torch.arange(T)
         else:
             assert subsamp_idx.shape == (T,), 'Subsampling mask must map from time to subsampling index'
         self.subsamp_idx = nn.Parameter(subsamp_idx, requires_grad=False)
