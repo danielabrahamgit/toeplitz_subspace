@@ -124,7 +124,7 @@ class SubspaceLinopFactory(nn.Module):
             norm = 'ortho'
             scale_factor = (2 ** D/2)
 
-        def AH_func(y: torch.Tensor):
+        def AH_func_old(y: torch.Tensor):
             assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
             y_out = torch.zeros((R, T, C, K), device=y.device).type(y.dtype)
             # Expand along subsampling dimension
@@ -141,6 +141,23 @@ class SubspaceLinopFactory(nn.Module):
                 x.append(x_a)
             x = torch.stack(x) # [A 1 H W]
             return x[:, 0, ...]
+
+        def AH_func(y: torch.Tensor):
+            assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
+            # y_out = torch.zeros((T, C, K), device=y.device).type(y.dtype)
+            # Apply adjoint density compensation
+            y = self.sqrt_dcf[:, None, :] * y
+            # Apply Adjoint NUFFT and coils
+            x = scale_factor * self.nufft_adjoint(y, self.trj, smaps=self.mps, norm=norm) # [T H W]
+            # Remove leftover coil dim
+            x = x[:, 0, ...]
+            orig_xshape = x.shape[1:]
+            # Apply adjoint subspace
+            x = rearrange(x, 't ... -> t (...)')
+            x = torch.einsum('at,td->ad', torch.conj(self.phi), x)
+            x = x.reshape(x.shape[0], *orig_xshape)
+            return x
+
         return AH_func, self.oshape, self.ishape
 
     def get_normal(
@@ -232,5 +249,5 @@ class SubspaceLinopFactory(nn.Module):
                 device='cpu',
                 verbose=True,
             )
-            np.save(cache_file, kernels)
+            np.save(cache_file, kernels.detach().cpu().numpy())
         return kernels
