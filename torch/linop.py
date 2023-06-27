@@ -166,6 +166,7 @@ class SubspaceLinopFactory(nn.Module):
             oversamp_factor: int = 2,
             device='cpu',
             kernels: Optional[torch.Tensor] = None,
+            batched: bool = False,
             verbose=False,
     ):
         """
@@ -189,27 +190,31 @@ class SubspaceLinopFactory(nn.Module):
             kernels = self.get_kernels(im_size, oversamp_factor, device, verbose)
         padder = PadLast(kernels.shape[-D:], im_size)
 
+        # For non-branching code for batching
+        coildim = 1 if batched else 0
         def AHA_func(x):
             """
-            x: [A H W]
+            x: [[N] A H W [D]]
             """
             dim = tuple(range(-D, 0))
             # Apply sensitivies
-            x = x[None, :, ...] * self.mps[:, None, ...] # [C A *im_size]
+            x = x.unsqueeze(coildim)
+            x = x * self.mps[:, None, ...] # [[N] C A *im_size]
             # Apply pad
             x = padder(x)
             # Apply Toeplitz'd NUFFT normal op
             Fx = fft.fftn(x, dim=dim, norm='ortho')
+            Fx = Fx.unsqueeze(coildim + 1)
             x = (oversamp_factor ** D) * fft.ifftn(
-                Fx[:, None, ...] * kernels, dim=dim, norm='ortho'
+                Fx * kernels, dim=dim, norm='ortho'
             ) # [C Aout Ain *2*im_size]
-            x = torch.sum(x, dim=2) # Sum over Ain
+            x = torch.sum(x, dim=(-D-1)) # Sum over Ain
 
             # Apply adjoint pad
             x = padder.adjoint(x)
             # Apply adjoint sensitivities
             x = x * torch.conj(self.mps[:, None, ...])
-            x = torch.sum(x, dim=0) # Sum over coils
+            x = torch.sum(x, dim=(-D-2)) # Sum over coils
             return x
         return AHA_func, self.ishape, self.ishape
 
