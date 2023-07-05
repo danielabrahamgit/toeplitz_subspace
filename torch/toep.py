@@ -8,9 +8,9 @@ def compute_weights(
         subsamp_idx: torch.Tensor,
         phi: torch.Tensor,
         sqrt_dcf: torch.Tensor,
-        device='cpu',
+        memory_efficient: bool = False,
 ):
-    device = sqrt_dcf.device
+    device = phi.device
     dtype = phi.dtype
     R, K = sqrt_dcf.shape
     A, T = phi.shape
@@ -20,9 +20,19 @@ def compute_weights(
     for a_in in range(A):
         weight = torch.zeros((R, A, K), device=device).type(dtype)
         weight[:, a_in, :] = 1.
-        weight = torch.einsum('at,rak->rtk', phi, weight)
-        weight = weight * subsamp_mask[..., None] * (sqrt_dcf[:, None, :] ** 2)
-        weight = torch.einsum('at,rtk->rak', torch.conj(phi), weight)
+        if memory_efficient:
+            out = []
+            for r in range(R):
+                idx = subsamp_idx[r]
+                tmp = torch.einsum('at,ak->tk', phi, weight[idx])
+                tmp = tmp * (sqrt_dcf[r] ** 2)
+                tmp = torch.einsum('at,tk->ak', torch.conj(phi), weight[idx])
+                out.append(tmp)
+            weight = torch.stack(out, dim=0)
+        else:
+            weight = torch.einsum('at,rak->rtk', phi, weight)
+            weight = weight * subsamp_mask[..., None] * (sqrt_dcf[:, None, :] ** 2)
+            weight = torch.einsum('at,rtk->rak', torch.conj(phi), weight)
         weights[:, :, a_in, :] = weight
     return weights
 

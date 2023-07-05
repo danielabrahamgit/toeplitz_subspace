@@ -18,9 +18,9 @@ from torchkbnufft import (
 )
 from tqdm import tqdm
 
-from .timing import tictoc
-from . import toep
-from .pad import PadLast
+from timing import tictoc
+import toep
+from pad import PadLast
 
 __all__ = ['SubspaceLinopFactory']
 
@@ -224,7 +224,7 @@ class SubspaceLinopFactory(nn.Module):
                 self.subsamp_idx,
                 self.phi,
                 self.sqrt_dcf,
-                device=device,
+                memory_efficient=True,
             )
 
         with tictoc('compute_kernels', verbose):

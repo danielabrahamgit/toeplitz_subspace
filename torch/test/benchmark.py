@@ -41,18 +41,19 @@ def torch_benchmark(fn, n_trials, *args, **kwargs):
 
 def test_mrf_subsp_linop():
     # Load data
-    device = torch.device(
-        f'cuda' if torch.cuda.is_available() else 'cpu'
-    )
+    # device = torch.device(
+    #     f'cuda' if torch.cuda.is_available() else 'cpu'
+    # )
+    device = torch.device('cpu')
     print(f'Using {device}')
     ksp, trj, dcf, phi, mps = load_data(device, verbose=True)
     T = ksp.shape[0]
-    R = 30
-    trj_subsamp = trj[:R] # Later trajectories repeat
-    dcf_subsamp = dcf[:R]
-    subsamp_idx = torch.arange(R).repeat(T//R)
+    #R = 30
+    #trj_subsamp = trj[:R] # Later trajectories repeat
+    #dcf_subsamp = dcf[:R]
+    #subsamp_idx = torch.arange(R).repeat(T//R)
     linop_factory = SubspaceLinopFactory(
-        trj_subsamp, phi, mps, torch.sqrt(dcf_subsamp), subsamp_idx,
+        trj, phi, mps, torch.sqrt(dcf),
     )
     linop_factory.to(device)
 
