@@ -2,7 +2,7 @@ from pathlib import Path
 from collections import OrderedDict
 from warnings import warn
 import time
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 import logging
 
 from einops import rearrange, repeat
@@ -167,10 +167,15 @@ class SubspaceLinopFactory(nn.Module):
     def get_adjoint(
             self,
             norm: Optional[str] = 'sigpy',
-            coil_batch: Optional[int] = None
+            coil_batch: Optional[int] = None,
+            trj_batch: Optional[int] = None,
+            nufft_device: Optional[Union[str, torch.device]] = None,
     ):
         """
         Note: Don't forget to apply sqrt_dcf to y before applying this
+        coil_batch: How many coils to compute inufft over at once
+        trj_batch: How many trajectories to compute inufft over at once
+        nufft_device: which device to use for nufft
         """
         R = self.trj.shape[0]
         A, *im_size = self.ishape
@@ -216,8 +221,11 @@ class SubspaceLinopFactory(nn.Module):
             x = torch.einsum('at,td->ad', torch.conj(self.phi), x)
             x = x.reshape(x.shape[0], *orig_xshape)
             return x
-        if coil_batch is None:
+        if coil_batch is None and trj_batch is None:
             return AH_func, self.oshape, self.ishape
+
+        coil_batch = coil_batch if coil_batch is not None else 1
+        trj_batch = trj_batch if trj_batch is not None else 1
 
         def AH_func(y: torch.Tensor):
             assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
@@ -227,18 +235,22 @@ class SubspaceLinopFactory(nn.Module):
             # Apply Adjoint NUFFT and coils
             # Parallelize across coils to save memory
             x = 0
-            for c, d in batch_iterator(C, coil_batch):
-                x_coil = scale_factor * self.nufft_adjoint(y[:, c:d],
-                                                           self.trj,
-                                                           smaps=self.mps[c:d], norm=norm) # [T H W]
-                x += x_coil[:, 0, ...]
-            # Remove leftover coil dim
-            #x = x[:, 0, ...]
-            orig_xshape = x.shape[1:]
-            # Apply adjoint subspace
-            x = rearrange(x, 't ... -> t (...)')
-            x = torch.einsum('at,td->ad', torch.conj(self.phi), x)
-            x = x.reshape(x.shape[0], *orig_xshape)
+            orig_device = y.device
+            for c, d in tqdm(batch_iterator(C, coil_batch),
+                             total=C//coil_batch,
+                             desc='Coils'):
+                x_coil = 0
+                for e, f in tqdm(batch_iterator(R, trj_batch),
+                                 total=R//trj_batch,
+                                 leave=False,
+                                 desc='Trjs'):
+                    x_tmp = scale_factor * self.nufft_adjoint(y[e:f, c:d].to(nufft_device),
+                                                            self.trj[e:f].to(nufft_device),
+                                                            smaps=self.mps[c:d].to(nufft_device), norm=norm) # [T H W]
+                    # Apply adjoint subspace (in inner loop to save memory)
+                    x_tmp = torch.einsum('at,t...->a...', torch.conj(self.phi[:, e:f].to(nufft_device)), x_tmp)
+                    x_coil += x_tmp.to(orig_device)
+                x += x_coil[:, 0, ...] # Remove leftover coil dim
             return x
 
         return AH_func, self.oshape, self.ishape
@@ -261,6 +273,9 @@ class SubspaceLinopFactory(nn.Module):
             kernels: torch.Tensor,
             batched: bool = True,
             oversamp_factor: int = 2,
+            coil_batch: Optional[int] = None,
+            sub_batch: Optional[int] = None,
+            nufft_device: Optional[torch.device] = None,
     ):
         """
         oversamp_factor: for toeplitz only, the oversamping factor for the PSF
@@ -273,31 +288,48 @@ class SubspaceLinopFactory(nn.Module):
         T, C, K = self.oshape
         R = self.trj.shape[0]
         padder = PadLast(kernels.shape[-D:], im_size)
+
         coildim = 1 if batched else 0
+        coil_batch = coil_batch if coil_batch is not None else 1
+        sub_batch = sub_batch if sub_batch is not None else 1
+        batch_slice = [slice(None)] if batched else [] # allows slicing of coils
         def AHA_func(x):
             """
             x: [[N] A H W [D]]
             """
+            if nufft_device is None:
+                fft_device = x.device
+            else:
+                fft_device = nufft_device
             dim = tuple(range(-D, 0))
             # Apply sensitivies
             x = x.unsqueeze(coildim)
             x = x * self.mps[:, None, ...] # [[N] C A *im_size]
-            # Apply pad
-            x = padder(x)
-            # Apply Toeplitz'd NUFFT normal op
-            Fx = fft.fftn(x, dim=dim, norm='ortho')
-            Fx = Fx.unsqueeze(coildim + 1)
-            x = (oversamp_factor ** D) * fft.ifftn(
-                Fx * kernels, dim=dim, norm='ortho'
-            ) # [C Aout Ain *2*im_size]
-            x = torch.sum(x, dim=(-D-1)) # Sum over Ain
 
-            # Apply adjoint pad
-            x = padder.adjoint(x)
-            # Apply adjoint sensitivities
-            x = x * torch.conj(self.mps[:, None, ...])
-            x = torch.sum(x, dim=(-D-2)) # Sum over coils
-            return x
+            # Sum over coils and Ain (subspace coeffs)
+            out = 0.
+            for v, w in tqdm(batch_iterator(A, sub_batch), total=A//sub_batch, desc='AHAx ffts', leave=False):
+                for l, u in tqdm(batch_iterator(C, coil_batch), total=C//coil_batch, desc='AHAx coils', leave=False):
+                    x_coil = x[batch_slice + [slice(l, u), slice(v, w)]]
+                    # Apply pad
+                    x_coil = padder(x_coil)
+                    # Apply Toeplitz'd NUFFT normal op
+                    x_subsp_coil = 0
+                    Fx = fft.fftn(x_coil.to(fft_device),
+                                  dim=dim, norm='ortho')
+                    Fx = Fx.unsqueeze(coildim + 1)
+                    x_coil_sub = (oversamp_factor ** D) * fft.ifftn(
+                        Fx * kernels[:, v:w].to(fft_device), dim=dim, norm='ortho'
+                    ) # [C Aout Ain *2*im_size]
+                    x_subsp_coil += torch.sum(x_coil_sub, dim=(-D-1)) # Sum over Ain
+
+                    # Apply adjoint pad
+                    x_coil = padder.adjoint(x_subsp_coil.to(x.device))
+
+                    # Apply adjoint sensitivities
+                    x_coil = x_coil * torch.conj(self.mps[l:u, None, ...])
+                    out += torch.sum(x_coil, dim=(-D-2)) # Sum over coils
+            return out
         return AHA_func, self.ishape, self.ishape
 
     def get_kernels(self, im_size, batch_size: Optional[int] = None):
