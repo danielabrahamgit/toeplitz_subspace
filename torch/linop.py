@@ -19,9 +19,9 @@ from torchkbnufft import (
 )
 from tqdm import tqdm
 
-from .timing import Timer
-from . import toep
-from .pad import PadLast
+from timing import Timer
+import toep
+from pad import PadLast
 
 logger = logging.getLogger(__name__)
 
