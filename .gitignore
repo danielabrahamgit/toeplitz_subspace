@@ -1,3 +1,3 @@
-*.npy
+*.np[yz]
 .ipynb_checkpoints
 __pycache__

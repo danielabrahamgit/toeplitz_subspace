@@ -3,6 +3,7 @@ from collections import OrderedDict
 from warnings import warn
 import time
 from typing import Optional, Tuple
+import logging
 
 from einops import rearrange, repeat
 import numpy as np
@@ -18,11 +19,18 @@ from torchkbnufft import (
 )
 from tqdm import tqdm
 
-from timing import tictoc
+from timing import Timer
 import toep
 from pad import PadLast
 
+logger = logging.getLogger(__name__)
+
 __all__ = ['SubspaceLinopFactory']
+
+def batch_iterator(total, batch_size):
+    assert total > 0, f'batch_iterator called with {total} elements'
+    delim = list(range(0, total, batch_size)) + [total]
+    return zip(delim[:-1], delim[1:])
 
 class SubspaceLinopFactory(nn.Module):
     def __init__(
@@ -40,15 +48,24 @@ class SubspaceLinopFactory(nn.Module):
         D: dimension of reconstruction (e.g 2D, 3D, etc)
         A: temporal subspace dimension
         K: number of kspace trajectory points
-        R: Number of interleaves
+        R: Number of interleaves (deprecated)
 
-        trj: [R D K] all kspace trajectories, in units of rad/voxel ([-pi, pi])
+        trj: [T D K] all kspace trajectories, in units of rad/voxel ([-pi, pi])
         phi: [A T] temporal subspace basis
         mps: [C H W] coil sensitivities
-        sqrt_dcf: [R K] Optional density compensation
+        sqrt_dcf: [T K] Optional density compensation
         subsamp_idx: [T] Useful when trajectories repeat at multiple timepoints.
             - subsamp_idx[t] = [r], where r is the subsampling index in 0,...,R-1 of that trajectory
             - TODO: support multiple trajectories per TR more easily, i.e. [T N]
+
+        Special cases:
+        trj: [T D K] there is one trajectory per time point (i.e. R == T)
+            - K can include multiple sub-trajectories
+            - sqrt_dcf: [T K] to match. Also, the dcf should be computed on a per-T basis
+            - subsamp_idx = torch.arange(T). Self-explanatory
+        trj: [1 D K] there is one trajectory for all time points (i.e. R == 1)
+            - sqrt_dcf: [1 K]
+            - subsamp_idx = torch.zeros(T).
 
         """
         super().__init__()
@@ -82,7 +99,11 @@ class SubspaceLinopFactory(nn.Module):
         self.nufft = KbNufft(im_size)
         self.nufft_adjoint = KbNufftAdjoint(im_size)
 
-    def get_forward(self, norm: Optional[str] = 'sigpy'):
+    def get_forward(
+            self,
+            norm: Optional[str] = 'sigpy',
+            coil_batch: Optional[int] = None,
+    ):
         R, D = self.trj.shape[:2]
         A = self.ishape[0]
         T, C, K = self.oshape
@@ -91,7 +112,7 @@ class SubspaceLinopFactory(nn.Module):
             norm = 'ortho'
             scale_factor = 2 ** (D/2)
 
-        def A_func(x: torch.Tensor):
+        def A_func_old(x: torch.Tensor):
             """
             x: [A *im_size]
             """
@@ -110,9 +131,47 @@ class SubspaceLinopFactory(nn.Module):
             # Subsample
             y = y[self.subsamp_idx, torch.arange(T), ...]
             return y # [T C K]
+
+        def A_func(x: torch.Tensor):
+            """
+            x: [A *im_size]
+            """
+            assert x.shape == self.ishape, f'Shape mismatch: x: {x.shape}, expected {self.ishape}'
+            # Apply subspace basis
+            x = torch.einsum('at,a...->t...', self.phi, x[:, None, ...]) # [T C *im_size]
+            y = scale_factor * self.nufft(x, self.trj, smaps=self.mps, norm=norm)  # [T C K]
+            y = self.sqrt_dcf[:, None, :] * y # [T C K]
+            # Subsample
+            return y # [T C K]
+        if coil_batch is None:
+            return A_func, self.ishape, self.oshape
+
+        def A_func(x: torch.Tensor):
+            """
+            x: [A *im_size]
+            """
+            assert x.shape == self.ishape, f'Shape mismatch: x: {x.shape}, expected {self.ishape}'
+            # Apply subspace basis
+            x = torch.einsum('at,a...->t...', self.phi, x[:, None, ...]) # [T C *im_size]
+            y = torch.zeros((T, C, K), dtype=torch.complex64, device=x.device)
+            for c, d in batch_iterator(C, coil_batch):
+                y[:, c:d, :] = scale_factor * self.nufft(x,
+                                                         self.trj,
+                                                         smaps=self.mps[c:d],
+                                                         norm=norm)  # [T C K]
+            y = self.sqrt_dcf[:, None, :] * y # [T C K]
+            # Subsample
+            return y # [T C K]
         return A_func, self.ishape, self.oshape
 
-    def get_adjoint(self, norm: Optional[str] = 'sigpy'):
+    def get_adjoint(
+            self,
+            norm: Optional[str] = 'sigpy',
+            coil_batch: Optional[int] = None
+    ):
+        """
+        Note: Don't forget to apply sqrt_dcf to y before applying this
+        """
         R = self.trj.shape[0]
         A, *im_size = self.ishape
         D = len(im_size)
@@ -157,40 +216,63 @@ class SubspaceLinopFactory(nn.Module):
             x = torch.einsum('at,td->ad', torch.conj(self.phi), x)
             x = x.reshape(x.shape[0], *orig_xshape)
             return x
+        if coil_batch is None:
+            return AH_func, self.oshape, self.ishape
+
+        def AH_func(y: torch.Tensor):
+            assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
+            # y_out = torch.zeros((T, C, K), device=y.device).type(y.dtype)
+            # Apply adjoint density compensation
+            y = self.sqrt_dcf[:, None, :] * y
+            # Apply Adjoint NUFFT and coils
+            # Parallelize across coils to save memory
+            x = 0
+            for c, d in batch_iterator(C, coil_batch):
+                x_coil = scale_factor * self.nufft_adjoint(y[:, c:d],
+                                                           self.trj,
+                                                           smaps=self.mps[c:d], norm=norm) # [T H W]
+                x += x_coil[:, 0, ...]
+            # Remove leftover coil dim
+            #x = x[:, 0, ...]
+            orig_xshape = x.shape[1:]
+            # Apply adjoint subspace
+            x = rearrange(x, 't ... -> t (...)')
+            x = torch.einsum('at,td->ad', torch.conj(self.phi), x)
+            x = x.reshape(x.shape[0], *orig_xshape)
+            return x
 
         return AH_func, self.oshape, self.ishape
 
-    def get_normal(
-            self,
-            toeplitz: bool = False,
-            oversamp_factor: int = 2,
-            device='cpu',
-            kernels: Optional[torch.Tensor] = None,
-            batched: bool = False,
-            verbose=False,
-    ):
+    def get_normal(self, kernels: Optional[torch.Tensor] = None, **kwargs):
         """
         Get the normal operator (i.e. A^H A)
-        oversamp_factor: for toeplitz only, the oversamping
-        factor for the PSF
+
         """
-        if not toeplitz:
-            A_func, _, _ = self.get_forward()
-            AH_func, _, _ = self.get_adjoint()
+        if kernels is None:
+            A_func, _, _ = self.get_forward(**kwargs)
+            AH_func, _, _ = self.get_adjoint(**kwargs)
             def AHA_func(x):
                 return AH_func(A_func(x))
             return AHA_func, self.ishape, self.ishape
+        return self.get_normal_toeplitz(kernels, **kwargs)
 
+    def get_normal_toeplitz(
+            self,
+            kernels: torch.Tensor,
+            batched: bool = True,
+            oversamp_factor: int = 2,
+    ):
+        """
+        oversamp_factor: for toeplitz only, the oversamping factor for the PSF
+          - default: 2
+        batched: Whether or not the toeplitz operator is batched (i.e. accepts [N A *im_size] tensors)
+          - default: True
+        """
         A, *im_size = self.ishape
         D = len(im_size)
         T, C, K = self.oshape
         R = self.trj.shape[0]
-        # Compute toeplitz embeddings
-        if kernels is None:
-            kernels = self.get_kernels(im_size, oversamp_factor, device, verbose)
         padder = PadLast(kernels.shape[-D:], im_size)
-
-        # For non-branching code for batching
         coildim = 1 if batched else 0
         def AHA_func(x):
             """
@@ -218,8 +300,10 @@ class SubspaceLinopFactory(nn.Module):
             return x
         return AHA_func, self.ishape, self.ishape
 
-    def get_kernels(self, im_size, oversamp_factor, device, verbose):
-        with tictoc('compute_weights', verbose):
+    def get_kernels(self, im_size):
+        """Simple way of getting kernels with good defaults
+        """
+        with Timer('compute_weights'):
             weights = toep.compute_weights(
                 self.subsamp_idx,
                 self.phi,
@@ -227,32 +311,30 @@ class SubspaceLinopFactory(nn.Module):
                 memory_efficient=True,
             )
 
-        with tictoc('compute_kernels', verbose):
+        with Timer('compute_kernels'):
             kernels = toep.compute_kernels(
                 self.trj,
                 weights,
                 im_size,
-                oversamp_factor,
-                device,
-                verbose,
+                oversamp_factor=2,
             )
         return kernels
 
-    def get_kernels_cache(
-            self,
-            cache_file: Path,
-            im_size: Tuple,
-            force_reload: bool = False,
-    ):
-        if cache_file.is_file() and not force_reload:
-            kernels = np.load(cache_file)
-            kernels = torch.from_numpy(kernels)
-        else:
-            kernels = self.get_kernels(
-                im_size,
-                oversamp_factor=2,
-                device='cpu',
-                verbose=True,
-            )
-            np.save(cache_file, kernels.detach().cpu().numpy())
-        return kernels
+    # def get_kernels_cache(
+    #         self,
+    #         cache_file: Path,
+    #         im_size: Tuple,
+    #         force_reload: bool = False,
+    # ):
+    #     if cache_file.is_file() and not force_reload:
+    #         kernels = np.load(cache_file)
+    #         kernels = torch.from_numpy(kernels)
+    #     else:
+    #         kernels = self.get_kernels(
+    #             im_size,
+    #             oversamp_factor=2,
+    #             device='cpu',
+    #             verbose=True,
+    #         )
+    #         np.save(cache_file, kernels.detach().cpu().numpy())
+    #     return kernels

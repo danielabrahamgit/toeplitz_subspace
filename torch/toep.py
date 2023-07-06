@@ -1,7 +1,10 @@
 from typing import Tuple
+import logging
 
 import torch
 from torchkbnufft import calc_toeplitz_kernel
+
+logger = logging.getLogger(__name__)
 
 
 def compute_weights(
@@ -26,7 +29,7 @@ def compute_weights(
                 idx = subsamp_idx[r]
                 tmp = torch.einsum('at,ak->tk', phi, weight[idx])
                 tmp = tmp * (sqrt_dcf[r] ** 2)
-                tmp = torch.einsum('at,tk->ak', torch.conj(phi), weight[idx])
+                tmp = torch.einsum('at,tk->ak', torch.conj(phi), tmp)
                 out.append(tmp)
             weight = torch.stack(out, dim=0)
         else:
@@ -41,17 +44,15 @@ def compute_kernels(
         trj: torch.Tensor,
         weights: torch.Tensor,
         im_size: Tuple,
-        oversamp_factor: float,
-        device='cpu',
-        verbose=False,
+        oversamp_factor: float = 2,
 ):
+    device = weights.device
     A = weights.shape[1]
     kernel_size = (oversamp_factor * d for d in im_size)
     kernels = torch.zeros((A, A, *kernel_size), device=device).type(weights.dtype)
     for a_in in range(A):
         for a_out in range(A):
-            if verbose:
-                print(f'>> Calculating kernel({a_out}, {a_in})')
+            logger.info(f'Calculating kernel({a_out}, {a_in})')
             kernel = calc_toeplitz_kernel(
                 trj,
                 im_size,
