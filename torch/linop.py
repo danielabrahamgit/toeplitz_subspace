@@ -334,6 +334,7 @@ class SubspaceLinopFactory(nn.Module):
 
     def get_kernels(self, im_size, batch_size: Optional[int] = None):
         """Simple way of getting kernels with good defaults
+        batch_size: controls batching over trajectories
         """
         if batch_size is None:
             return self._get_kernels(
@@ -364,7 +365,9 @@ class SubspaceLinopFactory(nn.Module):
         kernels = 0.
         for l, u in tqdm(
                 batch_iterator(total=R, batch_size=batch_size),
-                total=R//batch_size
+                total=R//batch_size,
+                desc='Computing toeplitz kernels',
+                leave=False,
         ):
             kernels += self._get_kernels(
                 im_size,
