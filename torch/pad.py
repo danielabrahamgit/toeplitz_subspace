@@ -9,6 +9,8 @@ class PadLast(nn.Module):
         self.im_dim = len(im_size)
         self.im_size = tuple(im_size)
         self.pad_im_size = tuple(pad_im_size)
+        for psz in pad_im_size:
+            assert not (psz % 2), 'Pad sizes must be even'
 
         sizes = [[(psz - isz) // 2]*2 for psz, isz in zip(pad_im_size, im_size)]
         self.pad = sum(sizes, start=[])

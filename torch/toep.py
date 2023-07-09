@@ -73,7 +73,8 @@ def compute_kernels(
     """
     device = weights.device
     A = weights.shape[1]
-    kernel_size = (oversamp_factor * d for d in im_size)
+    kernel_size = tuple(int(oversamp_factor*d) for d in im_size)
+    kernel_half_size = tuple(int(oversamp_factor*d/2) for d in im_size)
     kernels = torch.zeros((A, A, *kernel_size),
                           dtype=weights.dtype,
                           device=kernels_device)
@@ -82,8 +83,9 @@ def compute_kernels(
             logger.info(f'Calculating kernel({a_out}, {a_in})')
             kernel = calc_toeplitz_kernel(
                 trj,
-                im_size,
+                im_size=kernel_half_size,
                 weights=weights[:, None, a_out, a_in, :],
+                grid_size=kernel_size,
             )
             kernels[a_out, a_in, ...] = kernel.sum(dim=0).to(kernels_device)
     return kernels

@@ -40,6 +40,7 @@ class SubspaceLinopFactory(nn.Module):
             mps: torch.Tensor,
             sqrt_dcf: Optional[torch.Tensor] = None,
             subsamp_idx: Optional[torch.Tensor] = None,
+            oversamp_factor: float = 2.,
     ):
         """
         Dimensions:
@@ -96,8 +97,15 @@ class SubspaceLinopFactory(nn.Module):
             assert subsamp_idx.shape == (T,), 'Subsampling mask must map from time to subsampling index'
         self.subsamp_idx = nn.Parameter(subsamp_idx, requires_grad=False)
 
-        self.nufft = KbNufft(im_size)
-        self.nufft_adjoint = KbNufftAdjoint(im_size)
+        self.nufft = KbNufft(
+            im_size,
+            grid_size=tuple(int(oversamp_factor*d) for d in im_size),
+        )
+        self.nufft_adjoint = KbNufftAdjoint(
+            im_size,
+            grid_size=tuple(int(oversamp_factor*d) for d in im_size),
+        )
+        self.oversamp_factor = oversamp_factor
 
     def get_forward(
             self,
@@ -110,7 +118,8 @@ class SubspaceLinopFactory(nn.Module):
         scale_factor = 1.
         if norm == 'sigpy':
             norm = 'ortho'
-            scale_factor = 2 ** (D/2)
+            scale_factor = self.oversamp_factor
+            #scale_factor = 2 ** (D/2) # 2023-07-08 - no longer necessary (?)
 
         def A_func_old(x: torch.Tensor):
             """
@@ -272,7 +281,6 @@ class SubspaceLinopFactory(nn.Module):
             self,
             kernels: torch.Tensor,
             batched: bool = True,
-            oversamp_factor: int = 2,
             coil_batch: Optional[int] = None,
             sub_batch: Optional[int] = None,
             nufft_device: Optional[torch.device] = None,
@@ -318,7 +326,7 @@ class SubspaceLinopFactory(nn.Module):
                     Fx = fft.fftn(x_coil.to(fft_device),
                                   dim=dim, norm='ortho')
                     Fx = Fx.unsqueeze(coildim + 1)
-                    x_coil_sub = (oversamp_factor ** D) * fft.ifftn(
+                    x_coil_sub = (self.oversamp_factor ** D) * fft.ifftn(
                         Fx * kernels[:, v:w].to(fft_device), dim=dim, norm='ortho'
                     ) # [C Aout Ain *2*im_size]
                     x_subsp_coil += torch.sum(x_coil_sub, dim=(-D-1)) # Sum over Ain
@@ -338,12 +346,17 @@ class SubspaceLinopFactory(nn.Module):
         """
         if batch_size is None:
             return self._get_kernels(
-                im_size, self.subsamp_idx, self.phi, self.sqrt_dcf, self.trj
+                im_size,
+                self.subsamp_idx,
+                self.phi,
+                self.sqrt_dcf,
+                self.trj,
+                self.oversamp_factor,
             )
         return self._get_kernels_batched(im_size, batch_size)
 
     @staticmethod
-    def _get_kernels(im_size, subsamp_idx, phi, sqrt_dcf, trj):
+    def _get_kernels(im_size, subsamp_idx, phi, sqrt_dcf, trj, oversamp_factor):
         with Timer('compute_weights'):
             weights = toep.compute_weights(
                 subsamp_idx,
@@ -356,7 +369,7 @@ class SubspaceLinopFactory(nn.Module):
                 trj,
                 weights,
                 im_size,
-                oversamp_factor=2,
+                oversamp_factor=oversamp_factor,
             )
         return kernels
 
@@ -375,6 +388,7 @@ class SubspaceLinopFactory(nn.Module):
                 self.phi,
                 self.sqrt_dcf[l:u],
                 self.trj[l:u],
+                self.oversamp_factor,
             )
         return kernels
 
