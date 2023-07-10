@@ -97,6 +97,7 @@ class SubspaceLinopFactory(nn.Module):
             assert subsamp_idx.shape == (T,), 'Subsampling mask must map from time to subsampling index'
         self.subsamp_idx = nn.Parameter(subsamp_idx, requires_grad=False)
 
+
         self.nufft = KbNufft(
             im_size,
             grid_size=tuple(int(oversamp_factor*d) for d in im_size),
@@ -116,61 +117,36 @@ class SubspaceLinopFactory(nn.Module):
         A = self.ishape[0]
         T, C, K = self.oshape
         scale_factor = 1.
+        if coil_batch is None:
+            coil_batch = C
         if norm == 'sigpy':
             norm = 'ortho'
             scale_factor = self.oversamp_factor
-            #scale_factor = 2 ** (D/2) # 2023-07-08 - no longer necessary (?)
-
-        def A_func_old(x: torch.Tensor):
-            """
-            x: [A *im_size]
-            """
-            assert x.shape == self.ishape, f'Shape mismatch: x: {x.shape}, expected {self.ishape}'
-            y = []
-            for a in range(A):
-                x_a = x[a:a+1, ...]
-                x_a = x_a.repeat(R, 1, *(D*(1,)))  # [R 1 *im_size]
-                y_a = scale_factor * self.nufft(x_a, self.trj, smaps=self.mps, norm=norm)  # [R C K]
-                y.append(y_a)
-            y = torch.stack(y)  # [A R C K]
-            # Apply subspace basis
-            y = torch.einsum('at,arck->rtck', self.phi, y)
-            # Apply DCF (TODO: might change if multiple trajectories per timepoint)
-            y = self.sqrt_dcf[:, None, None, :] * y # [R T C K]
-            # Subsample
-            y = y[self.subsamp_idx, torch.arange(T), ...]
-            return y # [T C K]
 
         def A_func(x: torch.Tensor):
             """
             x: [A *im_size]
             """
             assert x.shape == self.ishape, f'Shape mismatch: x: {x.shape}, expected {self.ishape}'
-            # Apply subspace basis
-            x = torch.einsum('at,a...->t...', self.phi, x[:, None, ...]) # [T C *im_size]
-            y = scale_factor * self.nufft(x, self.trj, smaps=self.mps, norm=norm)  # [T C K]
-            y = self.sqrt_dcf[:, None, :] * y # [T C K]
-            # Subsample
-            return y # [T C K]
-        if coil_batch is None:
-            return A_func, self.ishape, self.oshape
-
-        def A_func(x: torch.Tensor):
-            """
-            x: [A *im_size]
-            """
-            assert x.shape == self.ishape, f'Shape mismatch: x: {x.shape}, expected {self.ishape}'
-            # Apply subspace basis
-            x = torch.einsum('at,a...->t...', self.phi, x[:, None, ...]) # [T C *im_size]
-            y = torch.zeros((T, C, K), dtype=torch.complex64, device=x.device)
-            for c, d in batch_iterator(C, coil_batch):
-                y[:, c:d, :] = scale_factor * self.nufft(x,
-                                                         self.trj,
-                                                         smaps=self.mps[c:d],
-                                                         norm=norm)  # [T C K]
-            y = self.sqrt_dcf[:, None, :] * y # [T C K]
-            # Subsample
-            return y # [T C K]
+            y = torch.zeros((T, C, K), device=x.device, dtype=torch.complex64)
+            for c, d in tqdm(batch_iterator(C, coil_batch),
+                             total=C//coil_batch,
+                             desc='A',
+                             leave=False):
+                for a in range(A):
+                    x_a = x[a:a+1, ...]
+                    x_a = x_a.repeat(R, 1, *(D*(1,)))  # [R 1 *im_size]
+                    y_a = scale_factor * self.nufft(
+                        x_a,
+                        self.trj,
+                        smaps=self.mps[c:d],
+                        norm=norm,
+                    )  # [R C K]
+                    y_a *= self.sqrt_dcf[:, None, :]
+                    y_a = y_a[self.subsamp_idx, ...]
+                    y_a *= self.phi[a, :, None, None]
+                    y[:, c:d, :] += y_a
+            return y
         return A_func, self.ishape, self.oshape
 
     def get_adjoint(
@@ -191,78 +167,39 @@ class SubspaceLinopFactory(nn.Module):
         D = len(im_size)
         T, C, K = self.oshape
         scale_factor = 1/np.prod(im_size)
+        if coil_batch is None:
+            coil_batch = C
         if norm == 'ortho':
             scale_factor = 1.
         elif norm == 'sigpy':
             norm = 'ortho'
-            scale_factor = (2 ** D/2)
-
-        def AH_func_old(y: torch.Tensor):
-            assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
-            y_out = torch.zeros((R, T, C, K), device=y.device).type(y.dtype)
-            # Expand along subsampling dimension
-            y_out[self.subsamp_idx, torch.arange(T), :, :] = y
-            # Apply adjoint density compensation
-            y = self.sqrt_dcf[:, None, None, :] * y_out
-            # Apply adjoint subspace
-            y = torch.einsum('at,rtck->arck', torch.conj(self.phi), y)
-            x = []
-            for a in range(A):
-                y_a = y[a, ...] # [R C K]
-                x_a = scale_factor * self.nufft_adjoint(y_a, self.trj, smaps=self.mps, norm=norm) # [R 1 H W]
-                x_a = x_a.sum(0) # [1 H W]
-                x.append(x_a)
-            x = torch.stack(x) # [A 1 H W]
-            return x[:, 0, ...]
+            scale_factor = self.oversamp_factor
 
         def AH_func(y: torch.Tensor):
             assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
-            # y_out = torch.zeros((T, C, K), device=y.device).type(y.dtype)
-            # Apply adjoint density compensation
-            y = self.sqrt_dcf[:, None, :] * y
-            # Apply Adjoint NUFFT and coils
-            x = scale_factor * self.nufft_adjoint(y, self.trj, smaps=self.mps, norm=norm) # [T H W]
-            # Remove leftover coil dim
-            x = x[:, 0, ...]
-            orig_xshape = x.shape[1:]
-            # Apply adjoint subspace
-            x = rearrange(x, 't ... -> t (...)')
-            x = torch.einsum('at,td->ad', torch.conj(self.phi), x)
-            x = x.reshape(x.shape[0], *orig_xshape)
-            return x
-        if coil_batch is None and trj_batch is None:
-            return AH_func, self.oshape, self.ishape
-
-        coil_batch = coil_batch if coil_batch is not None else 1
-        trj_batch = trj_batch if trj_batch is not None else 1
-
-        def AH_func(y: torch.Tensor):
-            assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
-            # y_out = torch.zeros((T, C, K), device=y.device).type(y.dtype)
-            # Apply adjoint density compensation
-            y = self.sqrt_dcf[:, None, :] * y
-            # Apply Adjoint NUFFT and coils
-            # Parallelize across coils to save memory
-            x = 0
-            orig_device = y.device
+            x = torch.zeros((A, *im_size), device=y.device, dtype=torch.complex64)
             for c, d in tqdm(batch_iterator(C, coil_batch),
                              total=C//coil_batch,
-                             desc='Coils'):
-                x_coil = 0
-                for e, f in tqdm(batch_iterator(R, trj_batch),
-                                 total=R//trj_batch,
-                                 leave=False,
-                                 desc='Trjs'):
-                    x_tmp = scale_factor * self.nufft_adjoint(y[e:f, c:d].to(nufft_device),
-                                                            self.trj[e:f].to(nufft_device),
-                                                            smaps=self.mps[c:d].to(nufft_device), norm=norm) # [T H W]
-                    # Apply adjoint subspace (in inner loop to save memory)
-                    x_tmp = torch.einsum('at,t...->a...', torch.conj(self.phi[:, e:f].to(nufft_device)), x_tmp)
-                    x_coil += x_tmp.to(orig_device)
-                x += x_coil[:, 0, ...] # Remove leftover coil dim
+                             desc='AH',
+                             leave=False):
+                for a in range(A):
+                    y_a = y * torch.conj(self.phi)[a, :, None, None]
+                    y_a = torch.zeros(
+                        (R, C, K), device=y.device, dtype=torch.complex64
+                    ).index_add_(0, self.subsamp_idx, y_a)
+                    y_a *= self.sqrt_dcf[:, None, :]
+                    x_a = scale_factor * self.nufft_adjoint(
+                        y_a,
+                        self.trj,
+                        smaps=self.mps[c:d],
+                        norm=norm,
+                    ) # [R 1 H W]
+                    x[a, ...] += torch.sum(x_a[:, 0, ...], dim=0)
             return x
 
+        #if coil_batch is None and trj_batch is None:
         return AH_func, self.oshape, self.ishape
+
 
     def get_normal(self, kernels: Optional[torch.Tensor] = None, **kwargs):
         """
@@ -344,16 +281,24 @@ class SubspaceLinopFactory(nn.Module):
         """Simple way of getting kernels with good defaults
         batch_size: controls batching over trajectories
         """
-        if batch_size is None:
-            return self._get_kernels(
-                im_size,
-                self.subsamp_idx,
-                self.phi,
-                self.sqrt_dcf,
-                self.trj,
-                self.oversamp_factor,
-            )
-        return self._get_kernels_batched(im_size, batch_size)
+        return toep._compute_weights_and_kernels(
+            im_size,
+            self.trj,
+            self.subsamp_idx,
+            self.phi,
+            self.sqrt_dcf,
+            self.oversamp_factor,
+        )
+        # if batch_size is None:
+        #     return self._get_kernels(
+        #         im_size,
+        #         self.subsamp_idx,
+        #         self.phi,
+        #         self.sqrt_dcf,
+        #         self.trj,
+        #         self.oversamp_factor,
+        #     )
+        # return self._get_kernels_batched(im_size, batch_size)
 
     @staticmethod
     def _get_kernels(im_size, subsamp_idx, phi, sqrt_dcf, trj, oversamp_factor):
@@ -362,7 +307,7 @@ class SubspaceLinopFactory(nn.Module):
                 subsamp_idx,
                 phi,
                 sqrt_dcf,
-                memory_efficient=True,
+                memory_efficient=False,
             )
         with Timer('compute_kernels'):
             kernels = toep.compute_kernels(
