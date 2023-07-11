@@ -1,7 +1,9 @@
 from typing import Tuple, Optional, Union
 import logging
 
+import numpy as np
 import torch
+import torch.fft as fft
 from torchkbnufft import calc_toeplitz_kernel, KbNufftAdjoint
 
 logger = logging.getLogger(__name__)
@@ -15,6 +17,7 @@ def compute_weights(
 ):
     if memory_efficient:
         return _compute_weights_mem_eff(subsamp_idx, phi, sqrt_dcf)
+    return _compute_weights(subsamp_idx, phi, sqrt_dcf)
     return _compute_weights_alt(subsamp_idx, phi, sqrt_dcf)
 
 def _compute_weights_mem_eff(
@@ -69,8 +72,12 @@ def _compute_weights_and_kernels(
         sqrt_dcf: torch.Tensor,
         oversamp_factor: float = 2.,
 ):
+    """Doing this myself since calc_toeplitz_kernel was being strange
+    May have to add batching later but hopefully not.
+    """
     device = phi.device
     dtype = phi.dtype
+    D = len(im_size)
     R, K = sqrt_dcf.shape
     A, T = phi.shape
     weights = torch.zeros((R, A, A, K), dtype=dtype, device=device)
@@ -82,20 +89,21 @@ def _compute_weights_and_kernels(
             weight = torch.ones((R, K), dtype=dtype, device=device).type(dtype)
             weight *= sqrt_dcf
             weight = weight[subsamp_idx, ...] # [T K]
-            weight = torch.einsum('t,tk->k', phi[a_in], weight)
-            weight = torch.einsum('t,k->tk', torch.conj(phi[a_out]), weight)
+            weight *= phi[a_in][:, None] * torch.conj(phi[a_out][:, None])
+            # Note: this sqrt dcf should go before the summation
+            weight *= sqrt_dcf[subsamp_idx, :]
             weight = torch.zeros((R, K), dtype=dtype, device=device).index_add_(0, subsamp_idx, weight)
-            weight *= sqrt_dcf
+            # Adj nufft with all-ones sensitivity maps
             kernel = adj_nufft(
-                (oversamp_factor ** 2) * weight[:, None, :],
+                weight[:, None, :],
                 trj,
                 smaps=torch.ones((1, *kernel_size), dtype=dtype, device=device)
             )
-            kernels[a_out, a_in] = kernel.sum((0, 1))
-    return kernels
-
-
-
+            # Summing out R and (fake) C dimension
+            kernels[a_out, a_in] = fft.fftn(kernel.sum((0, 1)), dim=tuple(range(-D, 0)), norm='ortho')
+    # Feels suspicious... need to test in 3D
+    scale_factor = oversamp_factor/((np.prod(im_size)) ** (1/D))
+    return kernels * scale_factor
 
 def compute_kernels(
         trj: torch.Tensor,
@@ -138,9 +146,6 @@ def compute_kernels_alt(
     for a_in in range(A):
         for a_out in range(A):
             logger.info(f'Calculating kernel({a_out}, {a_in})')
-
-
-
             kernel = calc_toeplitz_kernel(
                 trj,
                 im_size=kernel_half_size,

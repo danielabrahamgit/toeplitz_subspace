@@ -184,10 +184,10 @@ class SubspaceLinopFactory(nn.Module):
                              leave=False):
                 for a in range(A):
                     y_a = y * torch.conj(self.phi)[a, :, None, None]
+                    y_a *= self.sqrt_dcf[self.subsamp_idx, None, :]
                     y_a = torch.zeros(
                         (R, C, K), device=y.device, dtype=torch.complex64
                     ).index_add_(0, self.subsamp_idx, y_a)
-                    y_a *= self.sqrt_dcf[:, None, :]
                     x_a = scale_factor * self.nufft_adjoint(
                         y_a,
                         self.trj,
@@ -238,7 +238,7 @@ class SubspaceLinopFactory(nn.Module):
         coil_batch = coil_batch if coil_batch is not None else 1
         sub_batch = sub_batch if sub_batch is not None else 1
         batch_slice = [slice(None)] if batched else [] # allows slicing of coils
-        def AHA_func(x):
+        def AHA_func_old(x):
             """
             x: [[N] A H W [D]]
             """
@@ -275,6 +275,43 @@ class SubspaceLinopFactory(nn.Module):
                     x_coil = x_coil * torch.conj(self.mps[l:u, None, ...])
                     out += torch.sum(x_coil, dim=(-D-2)) # Sum over coils
             return out
+
+        def AHA_func(x: torch.Tensor):
+            """
+            x: [[N] A H W [D]]
+            """
+            import matplotlib
+            import matplotlib.pyplot as plt
+            out = torch.zeros_like(x)
+            dim = tuple(range(-D, 0))
+            # Apply sensitivies
+            x = x.unsqueeze(coildim)
+            x = x * self.mps[:, None, ...] # [[N] C Ain *im_size]
+            for a_in in range(A):
+                in_slc = batch_slice + [slice(None), a_in]
+                x_a_in = x[in_slc] # [[N] C *im_size
+                x_a_in = padder(x_a_in)
+                for a_out in range(A):
+                    kernel = kernels[a_out, a_in]
+                    Fx_a_in = fft.fftn(
+                        x_a_in,
+                        dim=dim,
+                        norm='ortho'
+                    )
+                    x_a_out = fft.ifftn(
+                        Fx_a_in * kernel,
+                        dim=dim,
+                        norm='ortho'
+                    )
+                    x_a_out = fft.ifftshift(x_a_out, dim=dim)
+                    x_a_out = padder.adjoint(x_a_out)
+                    # apply adjoint coil
+                    x_a_out *= torch.conj(self.mps)
+                    out_slc = batch_slice + [a_out]
+                    out[out_slc] += torch.sum(x_a_out, dim=coildim)
+            return out
+
+
         return AHA_func, self.ishape, self.ishape
 
     def get_kernels(self, im_size, batch_size: Optional[int] = None):
