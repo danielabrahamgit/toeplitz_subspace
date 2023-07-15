@@ -67,7 +67,6 @@ def _compute_weights(
 def _compute_weights_and_kernels(
         im_size: Tuple,
         trj: torch.Tensor,
-        subsamp_idx: torch.Tensor,
         phi: torch.Tensor,
         sqrt_dcf: torch.Tensor,
         oversamp_factor: float = 2.,
@@ -86,11 +85,12 @@ def _compute_weights_and_kernels(
         for a_out in range(A):
             weight = torch.ones((R, K), dtype=dtype, device=device).type(dtype)
             weight *= sqrt_dcf
-            weight = weight[subsamp_idx, ...] # [T K]
+            #weight = weight[subsamp_idx, ...] # [T K]
             weight *= phi[a_in][:, None] * torch.conj(phi[a_out][:, None])
             # Note: this sqrt dcf should go before the summation
-            weight *= sqrt_dcf[subsamp_idx, :]
-            weight = torch.zeros((R, K), dtype=dtype, device=device).index_add_(0, subsamp_idx, weight)
+            #weight *= sqrt_dcf[subsamp_idx, :]
+            weight *= sqrt_dcf
+            # weight = torch.zeros((R, K), dtype=dtype, device=device).index_add_(0, subsamp_idx, weight)
             # Adj nufft with all-ones sensitivity maps
             kernel = adj_nufft(
                 weight[:, None, :],

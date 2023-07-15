@@ -318,21 +318,24 @@ class SubspaceLinopFactory(nn.Module):
         """Compute kernels with the current set of data
         batch_size: controls batching over trajectories
         """
-        R = self.trj.shape[0]
-        batch_size = batch_size if batch_size is not None else R
+        T = self.phi.shape[1]
+        batch_size = batch_size if batch_size is not None else T
         kernels = 0.
         for l, u in tqdm(
-                batch_iterator(total=R, batch_size=batch_size),
-                total=R//batch_size,
+                batch_iterator(total=T, batch_size=batch_size),
+                total=T//batch_size,
                 desc='Computing toeplitz kernels',
                 leave=False,
         ):
+            trj_batch = self.trj[self.subsamp_idx, ...][l:u, ...]
+            phi_batch = self.phi[:, l:u]
+            sqrt_dcf_batch = self.sqrt_dcf[self.subsamp_idx, ...][l:u, ...]
+
             kernels += toep._compute_weights_and_kernels(
                 im_size,
-                self.trj[l:u],
-                self.subsamp_idx[l:u]-l,
-                self.phi[:, l:u],
-                self.sqrt_dcf[l:u],
+                trj_batch,
+                phi_batch,
+                sqrt_dcf_batch,
                 self.oversamp_factor,
             )
         return kernels
