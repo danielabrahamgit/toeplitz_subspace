@@ -73,17 +73,15 @@ def _compute_weights_and_kernels(
         oversamp_factor: float = 2.,
 ):
     """Doing this myself since calc_toeplitz_kernel was being strange
-    May have to add batching later but hopefully not.
     """
     device = phi.device
     dtype = phi.dtype
     D = len(im_size)
     R, K = sqrt_dcf.shape
     A, T = phi.shape
-    weights = torch.zeros((R, A, A, K), dtype=dtype, device=device)
     kernel_size = tuple(int(oversamp_factor*d) for d in im_size)
     kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
-    adj_nufft = KbNufftAdjoint(kernel_size, device=device)
+    adj_nufft = KbNufftAdjoint(kernel_size, grid_size=kernel_size, device=device)
     for a_in in range(A):
         for a_out in range(A):
             weight = torch.ones((R, K), dtype=dtype, device=device).type(dtype)

@@ -315,48 +315,11 @@ class SubspaceLinopFactory(nn.Module):
         return AHA_func, self.ishape, self.ishape
 
     def get_kernels(self, im_size, batch_size: Optional[int] = None):
-        """Simple way of getting kernels with good defaults
+        """Compute kernels with the current set of data
         batch_size: controls batching over trajectories
         """
-        return toep._compute_weights_and_kernels(
-            im_size,
-            self.trj,
-            self.subsamp_idx,
-            self.phi,
-            self.sqrt_dcf,
-            self.oversamp_factor,
-        )
-        # if batch_size is None:
-        #     return self._get_kernels(
-        #         im_size,
-        #         self.subsamp_idx,
-        #         self.phi,
-        #         self.sqrt_dcf,
-        #         self.trj,
-        #         self.oversamp_factor,
-        #     )
-        # return self._get_kernels_batched(im_size, batch_size)
-
-    @staticmethod
-    def _get_kernels(im_size, subsamp_idx, phi, sqrt_dcf, trj, oversamp_factor):
-        with Timer('compute_weights'):
-            weights = toep.compute_weights(
-                subsamp_idx,
-                phi,
-                sqrt_dcf,
-                memory_efficient=False,
-            )
-        with Timer('compute_kernels'):
-            kernels = toep.compute_kernels(
-                trj,
-                weights,
-                im_size,
-                oversamp_factor=oversamp_factor,
-            )
-        return kernels
-
-    def _get_kernels_batched(self, im_size, batch_size):
         R = self.trj.shape[0]
+        batch_size = batch_size if batch_size is not None else R
         kernels = 0.
         for l, u in tqdm(
                 batch_iterator(total=R, batch_size=batch_size),
@@ -364,33 +327,12 @@ class SubspaceLinopFactory(nn.Module):
                 desc='Computing toeplitz kernels',
                 leave=False,
         ):
-            kernels += self._get_kernels(
+            kernels += toep._compute_weights_and_kernels(
                 im_size,
-                self.subsamp_idx,
-                self.phi,
-                self.sqrt_dcf[l:u],
                 self.trj[l:u],
+                self.subsamp_idx[l:u]-l,
+                self.phi[:, l:u],
+                self.sqrt_dcf[l:u],
                 self.oversamp_factor,
             )
         return kernels
-
-
-
-    # def get_kernels_cache(
-    #         self,
-    #         cache_file: Path,
-    #         im_size: Tuple,
-    #         force_reload: bool = False,
-    # ):
-    #     if cache_file.is_file() and not force_reload:
-    #         kernels = np.load(cache_file)
-    #         kernels = torch.from_numpy(kernels)
-    #     else:
-    #         kernels = self.get_kernels(
-    #             im_size,
-    #             oversamp_factor=2,
-    #             device='cpu',
-    #             verbose=True,
-    #         )
-    #         np.save(cache_file, kernels.detach().cpu().numpy())
-    #     return kernels
