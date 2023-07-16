@@ -201,14 +201,14 @@ class SubspaceLinopFactory(nn.Module):
         return AH_func, self.oshape, self.ishape
 
 
-    def get_normal(self, kernels: Optional[torch.Tensor] = None, **kwargs):
+    def get_normal(self, kernels: Optional[torch.Tensor] = None):
         """
         Get the normal operator (i.e. A^H A)
 
         """
         if kernels is None:
-            A_func, _, _ = self.get_forward(**kwargs)
-            AH_func, _, _ = self.get_adjoint(**kwargs)
+            A_func, _, _ = self.get_forward()
+            AH_func, _, _ = self.get_adjoint()
             def AHA_func(x):
                 return AH_func(A_func(x))
             return AHA_func, self.ishape, self.ishape
@@ -217,7 +217,7 @@ class SubspaceLinopFactory(nn.Module):
     def get_normal_toeplitz(
             self,
             kernels: torch.Tensor,
-            batched: bool = True,
+            batched_input: bool = True,
             coil_batch: Optional[int] = None,
             sub_batch: Optional[int] = None,
             nufft_device: Optional[torch.device] = None,
@@ -234,10 +234,10 @@ class SubspaceLinopFactory(nn.Module):
         R = self.trj.shape[0]
         padder = PadLast(kernels.shape[-D:], im_size)
 
-        coildim = 1 if batched else 0
+        coildim = 1 if batched_input else 0
         coil_batch = coil_batch if coil_batch is not None else 1
         sub_batch = sub_batch if sub_batch is not None else 1
-        batch_slice = [slice(None)] if batched else [] # allows slicing of coils
+        batch_slice = [slice(None)] if batched_input else [] # allows slicing of coils
         def AHA_func_old(x):
             """
             x: [[N] A H W [D]]
