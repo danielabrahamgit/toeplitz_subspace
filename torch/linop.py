@@ -182,19 +182,20 @@ class SubspaceLinopFactory(nn.Module):
                              total=C//coil_batch,
                              desc='AH',
                              leave=False):
-                for a in range(A):
-                    y_a = y * torch.conj(self.phi)[a, :, None, None]
-                    y_a *= self.sqrt_dcf[self.subsamp_idx, None, :]
-                    y_a = torch.zeros(
-                        (R, C, K), device=y.device, dtype=torch.complex64
-                    ).index_add_(0, self.subsamp_idx, y_a)
-                    x_a = scale_factor * self.nufft_adjoint(
-                        y_a,
-                        self.trj,
-                        smaps=self.mps[c:d],
-                        norm=norm,
-                    ) # [R 1 H W]
-                    x[a, ...] += torch.sum(x_a[:, 0, ...], dim=0)
+                for e, f in tqdm(batch_iterator, T, trj_batch):
+                    for a in range(A):
+                        y_a = y * torch.conj(self.phi)[a, e:f, None, None]
+                        y_a *= self.sqrt_dcf[self.subsamp_idx[e:f], None, :]
+                        y_a = torch.zeros(
+                            (R, C, K), device=y.device, dtype=torch.complex64
+                        ).index_add_(0, self.subsamp_idx, y_a)
+                        x_a = scale_factor * self.nufft_adjoint(
+                            y_a,
+                            self.trj,
+                            smaps=self.mps[c:d],
+                            norm=norm,
+                        ) # [R 1 H W]
+                        x[a, ...] += torch.sum(x_a[:, 0, ...], dim=0)
             return x
 
         #if coil_batch is None and trj_batch is None:
@@ -318,9 +319,12 @@ class SubspaceLinopFactory(nn.Module):
         """Compute kernels with the current set of data
         batch_size: controls batching over trajectories
         """
-        T = self.phi.shape[1]
+        A, T = self.phi.shape
+        device = self.phi.device
+        dtype = self.phi.dtype
         batch_size = batch_size if batch_size is not None else T
-        kernels = 0.
+        kernel_size = tuple(int(self.oversamp_factor*d) for d in im_size)
+        kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
         for l, u in tqdm(
                 batch_iterator(total=T, batch_size=batch_size),
                 total=T//batch_size,
@@ -331,11 +335,15 @@ class SubspaceLinopFactory(nn.Module):
             phi_batch = self.phi[:, l:u]
             sqrt_dcf_batch = self.sqrt_dcf[self.subsamp_idx, ...][l:u, ...]
 
-            kernels += toep._compute_weights_and_kernels(
+            kernels = toep._compute_weights_and_kernels(
                 im_size,
                 trj_batch,
                 phi_batch,
                 sqrt_dcf_batch,
                 self.oversamp_factor,
+                kernels,
+                apply_scaling=False,
             )
-        return kernels
+        D = len(im_size)
+        scale_factor = self.oversamp_factor/((np.prod(im_size)) ** (1/D))
+        return kernels * scale_factor

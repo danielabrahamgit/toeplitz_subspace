@@ -70,6 +70,8 @@ def _compute_weights_and_kernels(
         phi: torch.Tensor,
         sqrt_dcf: torch.Tensor,
         oversamp_factor: float = 2.,
+        kernels: Optional[torch.Tensor] = None,
+        apply_scaling: bool = True,
 ):
     """Doing this myself since calc_toeplitz_kernel was being strange
     """
@@ -79,7 +81,8 @@ def _compute_weights_and_kernels(
     R, K = sqrt_dcf.shape
     A, T = phi.shape
     kernel_size = tuple(int(oversamp_factor*d) for d in im_size)
-    kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
+    if kernels is None:
+        kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
     adj_nufft = KbNufftAdjoint(kernel_size, grid_size=kernel_size, device=device)
     for a_in in range(A):
         for a_out in range(A):
@@ -98,10 +101,13 @@ def _compute_weights_and_kernels(
                 smaps=torch.ones((1, *kernel_size), dtype=dtype, device=device)
             )
             # Summing out R and (fake) C dimension
-            kernels[a_out, a_in] = fft.fftn(kernel.sum((0, 1)), dim=tuple(range(-D, 0)), norm='ortho')
+            kernels[a_out, a_in] += fft.fftn(kernel.sum((0, 1)), dim=tuple(range(-D, 0)), norm='ortho')
     # Feels suspicious... need to test in 3D
-    scale_factor = oversamp_factor/((np.prod(im_size)) ** (1/D))
-    return kernels * scale_factor
+    if apply_scaling:
+        scale_factor = oversamp_factor/((np.prod(im_size)) ** (1/D))
+        return kernels * scale_factor
+    return kernels
+
 
 def compute_kernels(
         trj: torch.Tensor,
