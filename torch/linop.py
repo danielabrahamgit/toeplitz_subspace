@@ -281,8 +281,6 @@ class SubspaceLinopFactory(nn.Module):
             """
             x: [[N] A H W [D]]
             """
-            import matplotlib
-            import matplotlib.pyplot as plt
             out = torch.zeros_like(x)
             dim = tuple(range(-D, 0))
             # Apply sensitivies
