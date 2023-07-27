@@ -167,8 +167,8 @@ class SubspaceLinopFactory(nn.Module):
         D = len(im_size)
         T, C, K = self.oshape
         scale_factor = 1/np.prod(im_size)
-        if coil_batch is None:
-            coil_batch = C
+        coil_batch = coil_batch if coil_batch is not None else C
+        trj_batch = trj_batch if trj_batch is not None else T
         if norm == 'ortho':
             scale_factor = 1.
         elif norm == 'sigpy':
@@ -182,7 +182,7 @@ class SubspaceLinopFactory(nn.Module):
                              total=C//coil_batch,
                              desc='AH',
                              leave=False):
-                for e, f in tqdm(batch_iterator, T, trj_batch):
+                for e, f in tqdm(batch_iterator(T, trj_batch)):
                     for a in range(A):
                         y_a = y * torch.conj(self.phi)[a, e:f, None, None]
                         y_a *= self.sqrt_dcf[self.subsamp_idx[e:f], None, :]
