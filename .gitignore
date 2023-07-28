@@ -1,3 +1,4 @@
 *.np[yz]
 .ipynb_checkpoints
+*.egg-info
 __pycache__
