@@ -70,9 +70,9 @@ class SubspaceLinopFactory(nn.Module):
 
         """
         super().__init__()
-        self.A, self.T = self.phi.shape
-        self.C, *self.im_size = self.mps.shape
-        self.R, self.D, self.K = self.trj.shape
+        self.A, self.T = phi.shape
+        self.C, *self.im_size = mps.shape
+        self.R, self.D, self.K = trj.shape
         assert self.D == len(self.im_size), f'Dimension mismatch: coils have dimension {len(im_size)}, trj has dimension {D}'
 
         self.trj = nn.Parameter(trj, requires_grad=False)
@@ -85,14 +85,14 @@ class SubspaceLinopFactory(nn.Module):
             assert subsamp_idx.shape[1] == self.T, f'subsamp_idx has first dimension {subsamp_idx.shape[0]}, expected {self.T}'
             self.I, _ = subsamp_idx.shape
         else:
-            logger.warn('No subsamp_idx provided')
+            logger.warning('No subsamp_idx provided')
             if self.R == 1:
-                logger.warn('Assuming one trajectory per timepoint')
-                subsamp_idx = torch.zeros(T).long()
+                logger.warning('Assuming one trajectory per timepoint')
+                subsamp_idx = torch.zeros((1, self.T)).long()
             elif self.R > 1:
-                assert R == T, 'If no subsampling mask provided and number of interleaves > 1, need one interleaf for each timepoint.'
-                logger.warn('Assuming trajectories and timepoints are in 1:1 correspondence')
-                subsamp_idx = torch.arange(self.T)
+                assert self.R == self.T, 'If no subsampling mask provided and number of interleaves > 1, need one interleaf for each timepoint.'
+                logger.warning('Assuming trajectories and timepoints are in 1:1 correspondence')
+                subsamp_idx = torch.arange(self.T)[None, :]
             else:
                 raise ValueError(f'No subsamp_idx provided and subsampling is ambiguous for trj: {trj.shape} and {T} timepoints.')
             self.I = 1
@@ -101,12 +101,12 @@ class SubspaceLinopFactory(nn.Module):
         # NUFFTs
         self.oversamp_factor = oversamp_factor
         self.nufft = KbNufft(
-            im_size,
-            grid_size=tuple(int(oversamp_factor*d) for d in im_size),
+            self.im_size,
+            grid_size=tuple(int(oversamp_factor*d) for d in self.im_size),
         )
         self.nufft_adjoint = KbNufftAdjoint(
-            im_size,
-            grid_size=tuple(int(oversamp_factor*d) for d in im_size),
+            self.im_size,
+            grid_size=tuple(int(oversamp_factor*d) for d in self.im_size),
         )
 
         # Input and output shapes
@@ -114,7 +114,8 @@ class SubspaceLinopFactory(nn.Module):
         self.oshape = (self.I, self.T, self.C, self.K)
 
     def get_forward(
-            self,
+            self
+,
             norm: Optional[str] = 'sigpy',
             coil_batch: Optional[int] = None,
     ):
@@ -165,7 +166,7 @@ class SubspaceLinopFactory(nn.Module):
         nufft_device: which device to use for nufft
         """
         I, T, C, K, A, R, D = self.I, self.T, self.C, self.K, self.A, self.R, self.D
-        scale_factor = 1/np.prod(im_size)
+        scale_factor = 1/np.prod(self.im_size)
         coil_batch = coil_batch if coil_batch is not None else C
         trj_batch = trj_batch if trj_batch is not None else T
         if norm == 'ortho':
@@ -176,7 +177,7 @@ class SubspaceLinopFactory(nn.Module):
 
         def AH_func(y: torch.Tensor):
             assert y.shape == self.oshape, f'Shape mismatch: y: {y.shape}, expected {self.oshape}'
-            x = torch.zeros((A, *im_size), device=y.device, dtype=torch.complex64)
+            x = torch.zeros((A, *self.im_size), device=y.device, dtype=torch.complex64)
             for c, d in tqdm(batch_iterator(C, coil_batch),
                              total=C//coil_batch,
                              desc='AH',
