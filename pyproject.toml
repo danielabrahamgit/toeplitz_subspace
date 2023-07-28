@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "toeplitz_subspace"
+version = "0.0.1"
+authors = [
+    { name = "Daniel Abraham", email = "abrahamd@stanford.edu" },
+    { name = "Mark Nishimura", email = "markn1@stanford.edu"}
+]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]
