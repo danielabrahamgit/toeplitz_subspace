@@ -2,14 +2,14 @@ import numpy as np
 import torch
 import pytest
 
-@pytest.fixture(params=[1, 16])
+@pytest.fixture(params=[1, 8])
 def random_subsamp_2d_mrf_problem(request):
     I = request.param
-    R = 32
-    T, K = 500, 1600
+    R = 16
+    T, K = 100, 800
     C = 12
     A = 5
-    im_size = (220, 220)
+    im_size = (110, 110)
     D = len(im_size)
 
     trj = torch.zeros((R, D, K)).uniform_(-np.pi, np.pi)
@@ -25,11 +25,11 @@ def random_subsamp_2d_mrf_problem(request):
 
 @pytest.fixture
 def random_fullsamp_2d_mrf_problem():
-    R, I = 32, 32
-    T, K = 500, 1600
+    R, I = 16, 16
+    T, K = 100, 800
     C = 12
     A = 5
-    im_size = (220, 220)
+    im_size = (110, 110)
     D = len(im_size)
 
     trj = torch.zeros((1, D, R*K)).uniform_(-np.pi, np.pi)

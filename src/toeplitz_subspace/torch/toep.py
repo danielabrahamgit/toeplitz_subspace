@@ -1,6 +1,7 @@
 from typing import Tuple, Optional, Union
 import logging
 
+from einops import rearrange
 import numpy as np
 import torch
 import torch.fft as fft
@@ -74,31 +75,30 @@ def _compute_weights_and_kernels(
         apply_scaling: bool = True,
 ):
     """Doing this myself since calc_toeplitz_kernel was being strange
+    trj: [I T D K]
+    phi: [A T]
+    sqrt_dcf: [I T K]
     """
     device = phi.device
-    dtype = phi.dtype
+    dtype = torch.complex64
     D = len(im_size)
     I, T, K = sqrt_dcf.shape
     A, _ = phi.shape
+    trj_flat = rearrange(trj, 'i t d k -> (i t) d k')
     kernel_size = tuple(int(oversamp_factor*d) for d in im_size)
     if kernels is None:
         kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
     adj_nufft = KbNufftAdjoint(kernel_size, grid_size=kernel_size, device=device)
     for a_in in range(A):
         for a_out in range(A):
-            weight = torch.ones((I, T, K), dtype=dtype, device=device).type(dtype)
-            # TODO Fix from here
-            weight *= sqrt_dcf
-            #weight = weight[subsamp_idx, ...] # [T K]
+            weight = torch.ones((I, T, K), dtype=dtype, device=device)
+            weight *= sqrt_dcf ** 2
             weight *= phi[a_in][:, None] * torch.conj(phi[a_out][:, None])
-            # Note: this sqrt dcf should go before the summation
-            #weight *= sqrt_dcf[subsamp_idx, :]
-            weight *= sqrt_dcf
-            # weight = torch.zeros((R, K), dtype=dtype, device=device).index_add_(0, subsamp_idx, weight)
             # Adj nufft with all-ones sensitivity maps
+            weight = rearrange(weight, 'i t k -> (i t) k')
             kernel = adj_nufft(
-                weight[:, None, :],
-                trj,
+                weight[:, None, :], # add coil dim
+                trj_flat,
                 smaps=torch.ones((1, *kernel_size), dtype=dtype, device=device)
             )
             # Summing out R and (fake) C dimension

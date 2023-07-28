@@ -233,7 +233,7 @@ class SubspaceLinopFactory(nn.Module):
           - default: True
         """
         I, T, C, K, A, R, D = self.I, self.T, self.C, self.K, self.A, self.R, self.D
-        padder = PadLast(kernels.shape[-D:], im_size)
+        padder = PadLast(kernels.shape[-D:], self.im_size)
 
         coildim = 1 if batched_input else 0
         coil_batch = coil_batch if coil_batch is not None else 1
@@ -319,7 +319,7 @@ class SubspaceLinopFactory(nn.Module):
         """
         A, T = self.phi.shape
         device = self.phi.device
-        dtype = self.phi.dtype
+        dtype = torch.complex64
         batch_size = batch_size if batch_size is not None else T
         kernel_size = tuple(int(self.oversamp_factor*d) for d in im_size)
         kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
@@ -330,7 +330,7 @@ class SubspaceLinopFactory(nn.Module):
                 leave=False,
         ):
             trj_batch = self.trj[self.subsamp_idx, ...][:, l:u, ...] # [I Tsub D K]
-            phi_batch = self.phi[:, l:u]
+            phi_batch = self.phi[:, l:u] # [A Tsub]
             sqrt_dcf_batch = self.sqrt_dcf[self.subsamp_idx, ...][:, l:u, ...] # [I Tsub K]
 
             kernels = toep._compute_weights_and_kernels(
