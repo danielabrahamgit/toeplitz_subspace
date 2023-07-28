@@ -78,15 +78,16 @@ def _compute_weights_and_kernels(
     device = phi.device
     dtype = phi.dtype
     D = len(im_size)
-    R, K = sqrt_dcf.shape
-    A, T = phi.shape
+    I, T, K = sqrt_dcf.shape
+    A, _ = phi.shape
     kernel_size = tuple(int(oversamp_factor*d) for d in im_size)
     if kernels is None:
         kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
     adj_nufft = KbNufftAdjoint(kernel_size, grid_size=kernel_size, device=device)
     for a_in in range(A):
         for a_out in range(A):
-            weight = torch.ones((R, K), dtype=dtype, device=device).type(dtype)
+            weight = torch.ones((I, T, K), dtype=dtype, device=device).type(dtype)
+            # TODO Fix from here
             weight *= sqrt_dcf
             #weight = weight[subsamp_idx, ...] # [T K]
             weight *= phi[a_in][:, None] * torch.conj(phi[a_out][:, None])
