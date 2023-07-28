@@ -8,11 +8,12 @@ dependencies:
   - matplotlib
   - numpy=1.22
   - python=3.10
-  - pytorch>=1.13
+  - pytorch>=2.0
   - pytorch-cuda
   - scipy
   - torchvision
   - tqdm
+  - pytest
   - pyyaml
   - pip
   - pip:
