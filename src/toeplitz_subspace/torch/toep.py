@@ -73,6 +73,7 @@ def _compute_weights_and_kernels(
         oversamp_factor: float = 2.,
         kernels: Optional[torch.Tensor] = None,
         apply_scaling: bool = True,
+        grid_size: Optional[Tuple] = None,
 ):
     """Doing this myself since calc_toeplitz_kernel was being strange
     trj: [I T D K]
@@ -90,8 +91,7 @@ def _compute_weights_and_kernels(
     kernel_size = tuple(int(oversamp_factor*d) for d in im_size)
     if kernels is None:
         kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
-    #adj_nufft = KbNufftAdjoint(kernel_size, grid_size=kernel_size, device=device)
-    adj_nufft = KbNufftAdjoint(kernel_size, device=device)
+    adj_nufft = KbNufftAdjoint(kernel_size, grid_size=grid_size, device=device)
     for a_in in range(A):
         for a_out in range(A):
             weight = torch.ones((I, T, K), dtype=dtype, device=device)
@@ -112,10 +112,7 @@ def _compute_weights_and_kernels(
 
     kernels = hermitify(kernels, D, centered=False)
     if apply_scaling:
-        # Feels suspicious... need to test in 3D
-        #scale_factor = oversamp_factor/((np.prod(im_size)) ** (1/2))
         scale_factor = 1/(np.prod(im_size))
-        #scale_factor = oversamp_factor
         return kernels * scale_factor
     return kernels
 
