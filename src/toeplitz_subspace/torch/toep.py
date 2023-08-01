@@ -79,6 +79,8 @@ def _compute_weights_and_kernels(
     phi: [A T]
     sqrt_dcf: [I T K]
     """
+    if torch.is_complex(phi):
+        logging.warning('Signal basis has imaginary component - kernel might not be hermitian')
     device = phi.device
     dtype = torch.complex64
     D = len(im_size)
@@ -88,7 +90,8 @@ def _compute_weights_and_kernels(
     kernel_size = tuple(int(oversamp_factor*d) for d in im_size)
     if kernels is None:
         kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
-    adj_nufft = KbNufftAdjoint(kernel_size, grid_size=kernel_size, device=device)
+    #adj_nufft = KbNufftAdjoint(kernel_size, grid_size=kernel_size, device=device)
+    adj_nufft = KbNufftAdjoint(kernel_size, device=device)
     for a_in in range(A):
         for a_out in range(A):
             weight = torch.ones((I, T, K), dtype=dtype, device=device)
@@ -102,12 +105,61 @@ def _compute_weights_and_kernels(
                 smaps=torch.ones((1, *kernel_size), dtype=dtype, device=device)
             )
             # Summing out R and (fake) C dimension
-            kernels[a_out, a_in] += fft.fftn(kernel.sum((0, 1)), dim=tuple(range(-D, 0)), norm='ortho')
-    # Feels suspicious... need to test in 3D
+            kernel = fft.ifftshift(kernel, dim=tuple(range(-D, 0)))
+            kernel = fft.fftn(kernel.sum((0, 1)), dim=tuple(range(-D, 0))) # DON'T do norm='ortho' here
+            kernels[a_out, a_in] += kernel
+            #kernels[a_out, a_in] += hermitify(kernel, D)
+
+    kernels = hermitify(kernels, D, centered=False)
     if apply_scaling:
-        scale_factor = oversamp_factor/((np.prod(im_size)) ** (1/D))
+        # Feels suspicious... need to test in 3D
+        #scale_factor = oversamp_factor/((np.prod(im_size)) ** (1/2))
+        scale_factor = 1/(np.prod(im_size))
+        #scale_factor = oversamp_factor
         return kernels * scale_factor
     return kernels
+
+
+def check_hermitian(x, ndims, centered: bool = False):
+    dims = tuple(range(-ndims, 0))
+    slices = []
+    for dim in dims:
+        if x.shape[dim] % 2:
+            slices.append(slice(None))
+        else:
+            slices.append(slice(1, None))
+    while len(slices) < len(x.shape):
+        slices.insert(0, slice(None))
+    if not centered:
+        x = fft.fftshift(x, dims)
+    xsym = x[slices].clone()
+    xsym_flip = torch.flip(xsym, dims=dims)
+    xsym_flip_conj = torch.conj(xsym_flip)
+    assert torch.isclose(xsym_flip_conj, xsym).all()
+
+def hermitify(x: torch.Tensor, ndims: int, centered: bool = False):
+    """Ensure the last ndims of x are hermitian symmetric
+    centered: True if x has already been fftshifted to have the DC coefficient in the center
+    """
+    dims = tuple(range(-ndims, 0))
+    slices = []
+    for dim in dims:
+        if x.shape[dim] % 2:
+            slices.append(slice(None))
+        else:
+            slices.append(slice(1, None))
+    while len(slices) < len(x.shape):
+        slices.insert(0, slice(None))
+    if not centered:
+        x = fft.fftshift(x, dims)
+    xsym = x[slices].clone()
+    xsym_flip = torch.flip(xsym, dims=dims)
+    xsym_flip_conj = torch.conj(xsym_flip)
+    x_hermit = (xsym + xsym_flip_conj) / 2
+    x[slices] = x_hermit
+    if not centered:
+        x = fft.ifftshift(x, dims)
+    return x
 
 
 def compute_kernels(

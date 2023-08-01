@@ -302,7 +302,6 @@ class SubspaceLinopFactory(nn.Module):
                         dim=dim,
                         norm='ortho'
                     )
-                    x_a_out = fft.ifftshift(x_a_out, dim=dim)
                     x_a_out = padder.adjoint(x_a_out)
                     # apply adjoint coil
                     x_a_out *= torch.conj(self.mps)
@@ -342,6 +341,18 @@ class SubspaceLinopFactory(nn.Module):
                 kernels,
                 apply_scaling=False,
             )
+        import matplotlib
+        import matplotlib.pyplot as plt
+        matplotlib.use('WebAgg')
+        kern = torch.abs(kernels[0, 0])
+        plt.imshow(kern.detach().cpu().numpy())
+        plt.figure()
+        plt.imshow(torch.fft.fftshift(kern))
+        #plt.show()
+
         D = len(im_size)
-        scale_factor = self.oversamp_factor/((np.prod(im_size)) ** (1/D))
+        #scale_factor = self.oversamp_factor/((np.prod(im_size)) ** (1/2))
+        scale_factor = 1/(np.prod(im_size))
+        from .toep import check_hermitian
+        check_hermitian(kernels, ndims=D, centered=False)
         return kernels * scale_factor
