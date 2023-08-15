@@ -73,7 +73,7 @@ class SubspaceLinopFactory(nn.Module):
         self.A, self.T = phi.shape
         self.C, *self.im_size = mps.shape
         self.R, self.D, self.K = trj.shape
-        assert self.D == len(self.im_size), f'Dimension mismatch: coils have dimension {len(im_size)}, trj has dimension {D}'
+        assert self.D == len(self.im_size), f'Dimension mismatch: coils have dimension {len(self.im_size)}, trj has dimension {self.D}'
 
         self.trj = nn.Parameter(trj, requires_grad=False)
         self.phi = nn.Parameter(phi, requires_grad=False)
