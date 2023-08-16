@@ -117,11 +117,15 @@ class SubspaceLinopFactory(nn.Module):
             self,
             norm: Optional[str] = 'sigpy',
             coil_batch: Optional[int] = None,
+            sub_batch: Optional[int] = None,
     ):
+        """
+        norm: Recommended 'sigpy' - scales tkbn's nufft to be equivalent to sigpy's nufft
+        """
         I, T, C, K, A, R, D = self.I, self.T, self.C, self.K, self.A, self.R, self.D
         scale_factor = 1.
-        if coil_batch is None:
-            coil_batch = C
+        coil_batch = coil_batch if coil_batch is not None else C
+        sub_batch = sub_batch if sub_batch is not None else A
         if norm == 'sigpy':
             norm = 'ortho'
             scale_factor = self.oversamp_factor
@@ -131,12 +135,15 @@ class SubspaceLinopFactory(nn.Module):
             """
             assert x.shape == self.ishape, f'Shape mismatch: x: {x.shape}, expected {self.ishape}'
             y = torch.zeros((I, T, C, K), device=x.device, dtype=torch.complex64)
-            for c, d in tqdm(batch_iterator(C, coil_batch),
+            for c1, c2 in tqdm(batch_iterator(C, coil_batch),
                              total=C//coil_batch,
-                             desc='A',
+                             desc='Forward (C)',
                              leave=False):
-                for a in range(A):
-                    x_a = x[a:a+1, ...]
+                for a1, a2 in tqdm(batch_iterator(A, sub_batch),
+                                   total=A//sub_batch,
+                                   desc='Forward (A)',
+                                   leave=False):
+                    x_a = x[a1:a2, ...]
                     x_a = x_a.repeat(R, 1, *(D*(1,)))  # [R 1 *im_size]
                     y_a = scale_factor * self.nufft(
                         x_a,
