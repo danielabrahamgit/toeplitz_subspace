@@ -81,7 +81,7 @@ def _compute_weights_and_kernels(
     sqrt_dcf: [I T K]
     """
     if torch.is_complex(phi):
-        logging.warning('Signal basis has imaginary component - kernel might not be hermitian')
+        logger.warning('Signal basis has imaginary component - kernel might not be hermitian')
     device = phi.device
     dtype = torch.complex64
     D = len(im_size)

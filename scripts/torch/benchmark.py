@@ -21,7 +21,6 @@ def turn_off_ticks_but_keep_labels(ax):
     ax.tick_params(axis='both', which='both', length=0)
     return ax
 
-
 def torch_benchmark(fn, n_trials, *args, **kwargs):
     timings = []
     for i in range(n_trials):
