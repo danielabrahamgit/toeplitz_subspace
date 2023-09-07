@@ -139,22 +139,23 @@ class SubspaceLinopFactory(nn.Module):
                              total=C//coil_batch,
                              desc='Forward (C)',
                              leave=False):
-                for a1, a2 in tqdm(batch_iterator(A, sub_batch),
-                                   total=A//sub_batch,
-                                   desc='Forward (A)',
-                                   leave=False):
-                    x_a = x[a1:a2, ...]
+                # for a1, a2 in tqdm(batch_iterator(A, sub_batch),
+                #                    total=A//sub_batch,
+                #                    desc='Forward (A)',
+                #                    leave=False):
+                for a in range(A):
+                    x_a = x[a]
                     x_a = x_a.repeat(R, 1, *(D*(1,)))  # [R 1 *im_size]
                     y_a = scale_factor * self.nufft(
                         x_a,
                         self.trj,
-                        smaps=self.mps[c:d],
+                        smaps=self.mps[c1:c2],
                         norm=norm,
                     )  # [R C K]
                     y_a *= self.sqrt_dcf[:, None, :]
                     y_a = y_a[self.subsamp_idx, ...] # [I T C K]
                     y_a *= self.phi[a, :, None, None]
-                    y[..., c:d, :] += y_a
+                    y[..., c1:c2, :] += y_a
             return y
         return A_func, self.ishape, self.oshape
 
@@ -186,9 +187,12 @@ class SubspaceLinopFactory(nn.Module):
             x = torch.zeros((A, *self.im_size), device=y.device, dtype=torch.complex64)
             for c, d in tqdm(batch_iterator(C, coil_batch),
                              total=C//coil_batch,
-                             desc='AH',
+                             desc='Adjoint (C)',
                              leave=False):
-                for e, f in tqdm(batch_iterator(T, trj_batch)):
+                for e, f in tqdm(batch_iterator(T, trj_batch),
+                                 total=T//trj_batch,
+                                 desc='Adjoint (T)',
+                                 leave=False):
                     for a in range(A):
                         y_a = y[:, e:f, :, :] * torch.conj(self.phi)[a, e:f, None, None] # [I Tsub, D K]
                         sqrt_dcf = self.sqrt_dcf[self.subsamp_idx[:, e:f], None, :] # [I Tsub 1 K]

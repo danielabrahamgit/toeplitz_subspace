@@ -4,6 +4,9 @@ import sigpy as sp
 import sigpy.mri as mri
 import torch
 import pytest
+from tqdm import tqdm
+
+from subsample import subsamp_interleaves
 
 
 @pytest.fixture
@@ -19,6 +22,87 @@ def vds():
     # plt.plot(trj[1, ..., 0], trj[1, ..., 1])
     # plt.show()
     # breakpoint()
+
+def spiral(im_size, R, n_shots, alpha=1.5):
+    trj = mri.spiral(
+        fov=1,
+        N=im_size[0],
+        f_sampling=0.8, # TODO function of self.n_read
+        R=R,
+        ninterleaves=n_shots,
+        alpha=alpha,
+        gm=40e-3, # Tesla / m
+        sm=100, # Tesla / m / s
+    )
+    assert trj.shape[0] % n_shots == 0
+    trj = trj.reshape((trj.shape[0] // n_shots, n_shots, 2), order='F')
+    return trj
+
+@pytest.fixture
+def spiralmrf2d():
+    n = 256 # image dim
+    im_size = (n, n) # image dim
+    nc = 16 # number of coils
+    sigma = 1e-2 * 0 # Noise std
+    trj_type = 'spiral' # trajectory type
+    subspace_dim = 1
+    n_trs = 1
+    n_shots = 4
+    #max_iter = 20 # max CG iterations
+    #R = 3 # Undersampling rate
+
+    # Subspace basis
+    M = np.random.randn(n_trs, subspace_dim) + 1j * np.random.randn(n_trs, subspace_dim)
+    Q, R = np.linalg.qr(M, mode='reduced')
+    phi = Q.T.real
+
+    # Phantom and sensitivity maps
+    phantom = sp.shepp_logan(im_size)
+    phantom = np.tile(phantom, reps=(subspace_dim, 1, 1))
+    phantom *= np.random.randn(subspace_dim, 1, 1)
+    mps = mri.birdcage_maps((nc, *im_size))
+
+    trj = spiral(im_size, R=1, n_shots=n_shots, alpha=1.5)
+    dcf = mri.pipe_menon_dcf(trj, im_size)
+    dcf /= np.max(dcf)
+    sqrt_dcf = np.sqrt(dcf)
+    #sqrt_dcf = np.tile(sqrt_dcf, reps=(n_shots, 1, 1))
+
+    # Forward models for ksp simulation
+    img = np.einsum('at,a...->t...', phi, phantom)
+    A = mri.linop.Sense(mps, trj)
+    ksp = []
+    for time_img in tqdm(img, total=img.shape[0]):
+        ksp.append(A * time_img)
+    ksp = np.stack(ksp, axis=0) # T C K
+    ksp += sigma * np.random.randn(*ksp.shape) + 1j * sigma * np.random.randn(*ksp.shape)
+
+    # Fix shapes
+    trj = rearrange(trj, 'k r d -> r 1 d k')
+    ksp = rearrange(ksp, 't c k r -> c r t k')
+    sqrt_dcf = rearrange(sqrt_dcf, 'k r -> r 1 k')
+
+    # Show data shapes
+    print(f'trj shape = {trj.shape}')
+    print(f'sqrt_dcf shape = {sqrt_dcf.shape}')
+    print(f'ksp shape = {ksp.shape}')
+    print(f'mps shape = {mps.shape}')
+    print(f'phi shape = {phi.shape}')
+    return trj, sqrt_dcf, ksp, phi, mps, phantom
+
+@pytest.fixture
+def subsampled_spiralmrf2d(spiralmrf2d):
+    n_interleaves = 1
+    trj, sqrt_dcf, ksp, phi, mps, phantom = spiralmrf2d
+    _, _, ksp, idx = subsamp_interleaves(trj, sqrt_dcf, ksp, n_interleaves=n_interleaves)
+    print(f'trj shape = {trj.shape}')
+    print(f'sqrt_dcf shape = {sqrt_dcf.shape}')
+    print(f'ksp shape = {ksp.shape}')
+    print(f'mps shape = {mps.shape}')
+    print(f'phi shape = {phi.shape}')
+    print(f'idx shape = {idx.shape}')
+    return trj, sqrt_dcf, ksp, phi, mps, phantom, idx
+
 
 @pytest.fixture(params=[1, 8])
 def random_subsamp_2d_mrf_problem(request, vds):

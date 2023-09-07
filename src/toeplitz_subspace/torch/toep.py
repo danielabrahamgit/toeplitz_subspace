@@ -92,6 +92,7 @@ def _compute_weights_and_kernels(
     if kernels is None:
         kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
     adj_nufft = KbNufftAdjoint(kernel_size, grid_size=grid_size, device=device)
+    #adj_nufft = KbNufftAdjoint(kernel_size, device=device)
     for a_in in range(A):
         for a_out in range(A):
             weight = torch.ones((I, T, K), dtype=dtype, device=device)
@@ -110,7 +111,7 @@ def _compute_weights_and_kernels(
             kernels[a_out, a_in] += kernel
             #kernels[a_out, a_in] += hermitify(kernel, D)
 
-    kernels = hermitify(kernels, D, centered=False)
+    #kernels = hermitify(kernels, D, centered=False)
     if apply_scaling:
         scale_factor = 1/(np.prod(im_size))
         return kernels * scale_factor

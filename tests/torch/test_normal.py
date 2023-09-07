@@ -1,13 +1,38 @@
+from einops import rearrange
 import numpy as np
 import torch
 import pytest
 
 from toeplitz_subspace.torch.linop import SubspaceLinopFactory
+from toeplitz_subspace.torch.viz import plot_kernels_2d
 
-def test_normal_subsamp(random_subsamp_2d_mrf_problem):
-    trj, sqrt_dcf, mps, phi, subsamp_idx, ksp, img = random_subsamp_2d_mrf_problem
+def test_normal_subsamp(subsampled_spiralmrf2d):
+    #trj, sqrt_dcf, mps, phi, subsamp_idx, ksp, img = random_subsamp_2d_mrf_problem
+    trj, sqrt_dcf, ksp, phi, mps, img, subsamp_idx = subsampled_spiralmrf2d
+    trj = torch.from_numpy(trj).float()
+    sqrt_dcf = torch.from_numpy(sqrt_dcf).float()
+    phi = torch.from_numpy(phi).type(torch.complex64)
+    ksp = torch.from_numpy(ksp).type(torch.complex64)
+    mps = torch.from_numpy(mps).type(torch.complex64)
+    img = torch.from_numpy(img).type(torch.complex64)
+    subsamp_idx = torch.from_numpy(subsamp_idx).long()
+
+    # preprocess
+    trj = trj[:, 0, ...] * 2*np.pi / img.shape[1]
+    print(f'trj shape: {trj.shape}, {trj.dtype}')
+    print(f'trj min: {trj.min()}, max: {trj.max()}')
+
+    sqrt_dcf = sqrt_dcf[:, 0, :]
+    print(f'sqrt_dcf shape: {sqrt_dcf.shape}, {sqrt_dcf.dtype}')
+
+    ksp = rearrange(ksp, 'c i t k -> i t c k')
+    print(f'ksp shape: {ksp.shape}, {ksp.dtype}')
+    print(f'mps shape: {mps.shape}, {mps.dtype}')
+    print(f'phi shape: {phi.shape}, {phi.dtype}')
+    print(f'subsamp_idx shape: {subsamp_idx.shape}, {subsamp_idx.dtype}')
     linop_factory = SubspaceLinopFactory(
-        trj, phi, mps, sqrt_dcf, subsamp_idx
+        trj, phi, mps, sqrt_dcf, subsamp_idx,
+        oversamp_factor=4.
     )
     AHA, ishape, oshape = linop_factory.get_normal()
     assert ishape == img.shape
@@ -19,8 +44,30 @@ def test_normal_subsamp(random_subsamp_2d_mrf_problem):
     AHA_toep, ishape_toep, oshape_toep = linop_factory.get_normal_toeplitz(kernels, batched_input=False)
     assert ishape_toep == ishape
     b2 = AHA_toep(img)
+
+    import matplotlib
+    import matplotlib.pyplot as plt
+    matplotlib.use('WebAgg')
+    fig, ax = plt.subplots(nrows=2, ncols=img.shape[0])
+    if img.shape[0] == 1:
+        pcm = ax[0].imshow(
+            np.rot90(np.abs(b.detach().cpu().numpy()), axes=(-2, -1))[0]
+        )
+        fig.colorbar(pcm, ax=ax[0], orientation='vertical', location='right')
+        pcm = ax[1].imshow(
+            np.rot90(np.abs(b2.detach().cpu().numpy()), axes=(-2, -1))[0]
+        )
+        fig.colorbar(pcm, ax=ax[1], orientation='vertical', location='right')
+
+    plot_kernels_2d(kernels)
+
+    plt.show()
+
+
+
+
     assert b2.shape == oshape_toep
-    #assert torch.isclose(b, b2).all()
+    assert torch.isclose(b, b2).all()
 
 def test_normal_fullsamp(random_fullsamp_2d_mrf_problem):
     trj, sqrt_dcf, mps, phi, subsamp_idx, ksp, img = random_fullsamp_2d_mrf_problem
