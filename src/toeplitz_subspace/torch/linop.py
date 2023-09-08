@@ -196,7 +196,7 @@ class SubspaceLinopFactory(nn.Module):
                     for a in range(A):
                         y_a = y[:, e:f, :, :] * torch.conj(self.phi)[a, e:f, None, None] # [I Tsub, D K]
                         sqrt_dcf = self.sqrt_dcf[self.subsamp_idx[:, e:f], None, :] # [I Tsub 1 K]
-                        y_a *= sqrt_dcf
+                        y_a = y_a * sqrt_dcf
                         flat_idx = rearrange(self.subsamp_idx, 'i t -> (i t)')
                         flat_y_a = rearrange(y_a, 'i t c k -> (i t) c k')
                         y_a = torch.zeros(
