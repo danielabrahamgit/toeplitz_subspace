@@ -194,17 +194,18 @@ class SubspaceLinopFactory(nn.Module):
                                  desc='Adjoint (T)',
                                  leave=False):
                     for a in range(A):
-                        y_a = y[:, e:f, :, :] * torch.conj(self.phi)[a, e:f, None, None] # [I Tsub, D K]
+                        y_a = y[:, e:f, c:d, :] * torch.conj(self.phi)[a, e:f, None, None] # [I Tsub, D K]
                         sqrt_dcf = self.sqrt_dcf[self.subsamp_idx[:, e:f], None, :] # [I Tsub 1 K]
                         y_a = y_a * sqrt_dcf
-                        flat_idx = rearrange(self.subsamp_idx, 'i t -> (i t)')
+                        flat_idx = rearrange(self.subsamp_idx[:, e:f], 'i t -> (i t)')
                         flat_y_a = rearrange(y_a, 'i t c k -> (i t) c k')
                         y_a = torch.zeros(
-                            (R, C, K), device=y.device, dtype=torch.complex64
+                            (R, d-c, K), device=y.device, dtype=torch.complex64
                         ).index_add_(0, flat_idx, flat_y_a)
+                        y_a = y_a[e:f]
                         x_a = scale_factor * self.nufft_adjoint(
                             y_a,
-                            self.trj,
+                            self.trj[e:f],
                             smaps=self.mps[c:d],
                             norm=norm,
                         ) # [R 1 H W], the 1 is the reduced coil dimension
