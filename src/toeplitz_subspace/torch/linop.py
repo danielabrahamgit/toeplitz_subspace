@@ -19,7 +19,6 @@ from torchkbnufft import (
 )
 from tqdm import tqdm
 
-from .timing import Timer
 from . import toep
 from .pad import PadLast
 
@@ -117,7 +116,7 @@ class SubspaceLinopFactory(nn.Module):
             self,
             norm: Optional[str] = 'sigpy',
             coil_batch: Optional[int] = None,
-            sub_batch: Optional[int] = None,
+            trj_batch: Optional[int] = None,
     ):
         """
         norm: Recommended 'sigpy' - scales tkbn's nufft to be equivalent to sigpy's nufft
@@ -125,7 +124,7 @@ class SubspaceLinopFactory(nn.Module):
         I, T, C, K, A, R, D = self.I, self.T, self.C, self.K, self.A, self.R, self.D
         scale_factor = 1.
         coil_batch = coil_batch if coil_batch is not None else C
-        sub_batch = sub_batch if sub_batch is not None else A
+        trj_batch = trj_batch if trj_batch is not None else T
         if norm == 'sigpy':
             norm = 'ortho'
             scale_factor = self.oversamp_factor
@@ -139,23 +138,29 @@ class SubspaceLinopFactory(nn.Module):
                              total=C//coil_batch,
                              desc='Forward (C)',
                              leave=False):
+                for t1, t2 in tqdm(batch_iterator(T, trj_batch),
+                                   total=R//trj_batch,
+                                   desc='Forward (R)',
+                                   leave=False):
                 # for a1, a2 in tqdm(batch_iterator(A, sub_batch),
                 #                    total=A//sub_batch,
                 #                    desc='Forward (A)',
                 #                    leave=False):
-                for a in range(A):
-                    x_a = x[a]
-                    x_a = x_a.repeat(R, 1, *(D*(1,)))  # [R 1 *im_size]
-                    y_a = scale_factor * self.nufft(
-                        x_a,
-                        self.trj,
-                        smaps=self.mps[c1:c2],
-                        norm=norm,
-                    )  # [R C K]
-                    y_a *= self.sqrt_dcf[:, None, :]
-                    y_a = y_a[self.subsamp_idx, ...] # [I T C K]
-                    y_a *= self.phi[a, :, None, None]
-                    y[..., c1:c2, :] += y_a
+                    for a in range(A):
+                        x_a = x[a]
+                        x_a = x_a.repeat(t2-t1, 1, *(D*(1,)))  # [R 1 *im_size]
+                        trj = self.trj[self.subsamp_idx][:, t1:t2, ...]
+                        trj = rearrange(trj, 'i t d k -> t d (i k)')
+                        y_a = scale_factor * self.nufft(
+                            x_a,
+                            trj,
+                            smaps=self.mps[c1:c2],
+                            norm=norm,
+                        )  # [R C K]
+                        y_a = rearrange(y_a, 't c (i k) -> i t c k', i=I)
+                        y_a = y_a * self.sqrt_dcf[self.subsamp_idx][:, t1:t2, None, :]
+                        y_a = y_a * self.phi[a, t1:t2, None, None]
+                        y[:, t1:t2, c1:c2, :] += y_a
             return y
         return A_func, self.ishape, self.oshape
 
@@ -232,6 +237,7 @@ class SubspaceLinopFactory(nn.Module):
     def get_normal_toeplitz(
             self,
             kernels: torch.Tensor,
+            norm: str = 'sigpy',
             batched_input: bool = True,
             coil_batch: Optional[int] = None,
             sub_batch: Optional[int] = None,
@@ -245,6 +251,12 @@ class SubspaceLinopFactory(nn.Module):
         """
         I, T, C, K, A, R, D = self.I, self.T, self.C, self.K, self.A, self.R, self.D
         padder = PadLast(kernels.shape[-D:], self.im_size)
+
+        scale_factor = 1.
+        if norm == 'sigpy':
+            # NOT dimension-specific, the square is once for the forward, once for adjoint.
+            scale_factor = self.oversamp_factor ** 2
+
 
         coildim = 1 if batched_input else 0
         coil_batch = coil_batch if coil_batch is not None else 1
@@ -317,41 +329,46 @@ class SubspaceLinopFactory(nn.Module):
                     # apply adjoint coil
                     x_a_out *= torch.conj(self.mps)
                     out_slc = batch_slice + [a_out]
-                    out[out_slc] += torch.sum(x_a_out, dim=coildim)
+                    out[out_slc] += scale_factor * torch.sum(x_a_out, dim=coildim)
             return out
 
 
         return AHA_func, self.ishape, self.ishape
 
-    def get_kernels(self, im_size, batch_size: Optional[int] = None):
+    def get_kernels(
+            self,
+            im_size,
+            **batch_kwargs,
+    ):
         """Compute kernels with the current set of data
-        batch_size: controls batching over trajectories
+        batch_kwargs: misc kwargs to pass to toep module
         """
         A, T = self.phi.shape
         device = self.phi.device
         dtype = torch.complex64
-        batch_size = batch_size if batch_size is not None else T
         kernel_size = tuple(int(self.oversamp_factor*d) for d in im_size)
         kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
-        for l, u in tqdm(
-                batch_iterator(total=T, batch_size=batch_size),
-                total=T//batch_size,
-                desc='Computing toeplitz kernels',
-                leave=False,
-        ):
-            trj_batch = self.trj[self.subsamp_idx, ...][:, l:u, ...] # [I Tsub D K]
-            phi_batch = self.phi[:, l:u] # [A Tsub]
-            sqrt_dcf_batch = self.sqrt_dcf[self.subsamp_idx, ...][:, l:u, ...] # [I Tsub K]
+        # for l, u in tqdm(
+        #         batch_iterator(total=T, batch_size=batch_size),
+        #         total=T//batch_size,
+        #         desc='Computing toeplitz kernels',
+        #         leave=False,
+        # ):
+        # trj_batch = self.trj[self.subsamp_idx, ...][:, l:u, ...] # [I Tsub D K]
+        # phi_batch = self.phi[:, l:u] # [A Tsub]
+        # sqrt_dcf_batch = self.sqrt_dcf[self.subsamp_idx, ...][:, l:u, ...] # [I Tsub K]
 
-            kernels = toep._compute_weights_and_kernels(
-                im_size,
-                trj_batch,
-                phi_batch,
-                sqrt_dcf_batch,
-                self.oversamp_factor,
-                kernels,
-                apply_scaling=False,
-            )
+        kernels = toep._compute_weights_and_kernels(
+            im_size,
+            self.trj[self.subsamp_idx, ...],
+            self.phi,
+            self.sqrt_dcf[self.subsamp_idx, ...],
+            self.oversamp_factor,
+            kernels,
+            apply_scaling=False,
+            **batch_kwargs,
+        )
         D = len(im_size)
-        scale_factor = 1/(np.prod(im_size))
+        #scale_factor = 1/(np.prod(im_size) * self.oversamp_factor)
+        scale_factor = 1/(np.prod(im_size) * self.oversamp_factor ** D)
         return kernels * scale_factor

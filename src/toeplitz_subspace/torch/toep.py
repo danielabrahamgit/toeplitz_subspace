@@ -6,9 +6,24 @@ import numpy as np
 import torch
 import torch.fft as fft
 from torchkbnufft import calc_toeplitz_kernel, KbNufftAdjoint
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
+def batch_iterator(total, batch_size):
+    assert total > 0, f'batch_iterator called with {total} elements'
+    delim = list(range(0, total, batch_size)) + [total]
+    return zip(delim[:-1], delim[1:])
+
+def batch_tqdm(total, batch_size, **tqdm_kwargs):
+    return tqdm(
+        batch_iterator(total, batch_size),
+        total=ceildiv(total, batch_size),
+        **tqdm_kwargs
+    )
+
+def ceildiv(num, denom):
+    return -(num//-denom)
 
 def compute_weights(
         subsamp_idx: torch.Tensor,
@@ -74,6 +89,8 @@ def _compute_weights_and_kernels(
         kernels: Optional[torch.Tensor] = None,
         apply_scaling: bool = True,
         grid_size: Optional[Tuple] = None,
+        trj_batch: int = None,
+        sub_batch: int = None,
 ):
     """Doing this myself since calc_toeplitz_kernel was being strange
     trj: [I T D K]
@@ -87,33 +104,38 @@ def _compute_weights_and_kernels(
     D = len(im_size)
     I, T, K = sqrt_dcf.shape
     A, _ = phi.shape
-    trj_flat = rearrange(trj, 'i t d k -> (i t) d k')
+    # trj_flat = rearrange(trj, 'i t d k -> (i t) d k')
+    trj_flat = rearrange(trj, 'i t d k -> 1 d (i t k)')
     kernel_size = tuple(int(oversamp_factor*d) for d in im_size)
     if kernels is None:
         kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
     adj_nufft = KbNufftAdjoint(kernel_size, grid_size=grid_size, device=device)
-    #adj_nufft = KbNufftAdjoint(kernel_size, device=device)
-    for a_in in range(A):
-        for a_out in range(A):
-            weight = torch.ones((I, T, K), dtype=dtype, device=device)
-            weight *= sqrt_dcf ** 2
-            weight *= phi[a_in][:, None] * torch.conj(phi[a_out][:, None])
-            # Adj nufft with all-ones sensitivity maps
-            weight = rearrange(weight, 'i t k -> (i t) k')
-            kernel = adj_nufft(
-                weight[:, None, :], # add coil dim
-                trj_flat,
-                smaps=torch.ones((1, *kernel_size), dtype=dtype, device=device)
-            )
-            # Summing out R and (fake) C dimension
-            kernel = fft.ifftshift(kernel, dim=tuple(range(-D, 0)))
-            kernel = fft.fftn(kernel.sum((0, 1)), dim=tuple(range(-D, 0))) # DON'T do norm='ortho' here
-            kernels[a_out, a_in] += kernel
-            #kernels[a_out, a_in] += hermitify(kernel, D)
+
+    trj_batch = trj_batch if trj_batch is not None else I * T * K
+    sub_batch = sub_batch if sub_batch is not None else A
+    # Do an entire column at a time.
+    for a_in in tqdm(range(A), desc='A_in', leave=False):
+        weight = torch.ones((I, A, T, K), dtype=dtype, device=device)
+        weight *= sqrt_dcf[:, None, ...] ** 2
+        weight *= phi[None, a_in, :, None]* torch.conj(phi[None, ..., None])
+        # Adj nufft with all-ones sensitivity maps
+        # Allow the adjoint nufft to do the accumulation
+        weight = rearrange(weight, 'i a t k -> 1 a (i t k)')
+        for t1, t2 in batch_tqdm(weight.shape[-1], trj_batch, desc='(I, T, K)', leave=False):
+            for s1, s2 in batch_tqdm(A, sub_batch, desc='A_out', leave=False):
+                kernel = adj_nufft(
+                    weight[:, s1:s2, t1:t2], # add coil dim
+                    trj_flat[..., t1:t2],
+                    #smaps=torch.ones((1, *kernel_size), dtype=dtype, device=device)
+                )
+                kernel = fft.ifftshift(kernel, dim=tuple(range(-D, 0))) # [1 A *im_size]
+                kernel = fft.fftn(kernel[0], dim=tuple(range(-D, 0))) # DON'T do norm='ortho' here
+                kernels[s1:s2, a_in, ...] += kernel
+                #kernels[a_out, a_in] += hermitify(kernel, D)
 
     #kernels = hermitify(kernels, D, centered=False)
     if apply_scaling:
-        scale_factor = 1/(np.prod(im_size))
+        scale_factor = 1/(np.prod(im_size) * oversamp_factor ** D)
         return kernels * scale_factor
     return kernels
 
