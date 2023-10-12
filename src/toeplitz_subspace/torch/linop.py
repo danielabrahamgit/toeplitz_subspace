@@ -348,15 +348,6 @@ class SubspaceLinopFactory(nn.Module):
         dtype = torch.complex64
         kernel_size = tuple(int(self.oversamp_factor*d) for d in im_size)
         kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
-        # for l, u in tqdm(
-        #         batch_iterator(total=T, batch_size=batch_size),
-        #         total=T//batch_size,
-        #         desc='Computing toeplitz kernels',
-        #         leave=False,
-        # ):
-        # trj_batch = self.trj[self.subsamp_idx, ...][:, l:u, ...] # [I Tsub D K]
-        # phi_batch = self.phi[:, l:u] # [A Tsub]
-        # sqrt_dcf_batch = self.sqrt_dcf[self.subsamp_idx, ...][:, l:u, ...] # [I Tsub K]
 
         kernels = toep._compute_weights_and_kernels(
             im_size,
