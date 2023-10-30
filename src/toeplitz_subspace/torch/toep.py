@@ -108,7 +108,8 @@ def _compute_weights_and_kernels(
     trj_flat = rearrange(trj, 'i t d k -> 1 d (i t k)')
     kernel_size = tuple(int(oversamp_factor*d) for d in im_size)
     if kernels is None:
-        kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device=device)
+        # This is the largest array and doesn't need to be kept on device
+        kernels = torch.zeros((A, A, *kernel_size), dtype=dtype, device='cpu')
     adj_nufft = KbNufftAdjoint(kernel_size, grid_size=grid_size, device=device)
 
     trj_batch = trj_batch if trj_batch is not None else I * T * K
@@ -117,7 +118,7 @@ def _compute_weights_and_kernels(
     for a_in in tqdm(range(A), desc='A_in', leave=False):
         weight = torch.ones((I, A, T, K), dtype=dtype, device=device)
         weight *= sqrt_dcf[:, None, ...] ** 2
-        weight *= phi[None, a_in, :, None]* torch.conj(phi[None, ..., None])
+        weight *= phi[None, a_in:a_in+1, :, None]* torch.conj(phi[None, ..., None])
         # Adj nufft with all-ones sensitivity maps
         # Allow the adjoint nufft to do the accumulation
         weight = rearrange(weight, 'i a t k -> 1 a (i t k)')
@@ -130,7 +131,7 @@ def _compute_weights_and_kernels(
                 )
                 kernel = fft.ifftshift(kernel, dim=tuple(range(-D, 0))) # [1 A *im_size]
                 kernel = fft.fftn(kernel[0], dim=tuple(range(-D, 0))) # DON'T do norm='ortho' here
-                kernels[s1:s2, a_in, ...] += kernel
+                kernels[s1:s2, a_in, ...] += kernel.detach().cpu()
                 #kernels[a_out, a_in] += hermitify(kernel, D)
 
     #kernels = hermitify(kernels, D, centered=False)
